@@ -46,6 +46,10 @@ All notable changes to this pre-release repository are documented here.
   remains alive across exact IPv4 and IPv6 probes. Each of the four traffic
   paths requires 8/8 proxy `401` responses and zero wildcard accepts. Bind
   success is recorded independently, while unexpected bind errors fail closed.
+- Made paired IPv6/IPv4 ephemeral-port allocation retry bounded
+  `AddrInUse` races. Parallel proxy starts now select a fresh candidate up to
+  32 times, while every other listener configuration or bind error still fails
+  immediately.
 - Added a raw upstream response guard that releases no bytes to Hyper until a
   bounded HTTP/1.1 response head passes strict CRLF, header-count, header-size,
   and unambiguous `Content-Length`/`Transfer-Encoding` checks. Ordinary HTTP

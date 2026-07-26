@@ -68,6 +68,7 @@ pub const BOOTSTRAP_HEADER_NAME: &str = "x-rpackit-bootstrap";
 const BOOTSTRAP_PATH: &str = "/__rpackit_bootstrap";
 const PROTECTED_HEADER: &str = "shiny-shared-secret";
 const BOOTSTRAP_BODY: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Loading</title></head><body><p>Loading application\u{2026}</p></body></html>";
+const DUAL_LOOPBACK_BIND_ATTEMPTS: usize = 32;
 
 type BoxError = Box<dyn StdError + Send + Sync>;
 type ProxyBody = UnsyncBoxBody<Bytes, BoxError>;
@@ -467,6 +468,10 @@ impl TrackedTasks {
 }
 
 fn bind_dual_loopback() -> io::Result<(TcpListener, TcpListener, u16)> {
+    retry_addr_in_use(DUAL_LOOPBACK_BIND_ATTEMPTS, bind_dual_loopback_once)
+}
+
+fn bind_dual_loopback_once() -> io::Result<(TcpListener, TcpListener, u16)> {
     let ipv6 = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
     ipv6.set_only_v6(true)?;
     configure_listener_ownership(&ipv6)?;
@@ -488,6 +493,28 @@ fn bind_dual_loopback() -> io::Result<(TcpListener, TcpListener, u16)> {
     let ipv4 = TcpListener::from_std(ipv4.into())?;
     let ipv6 = TcpListener::from_std(ipv6.into())?;
     Ok((ipv4, ipv6, port))
+}
+
+fn retry_addr_in_use<T>(
+    attempts: usize,
+    mut operation: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut last_conflict = None;
+    for _ in 0..attempts {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                last_conflict = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_conflict.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "compatible dual-loopback port allocation remained contended",
+        )
+    }))
 }
 
 fn configure_listener_ownership(socket: &Socket) -> io::Result<()> {
@@ -1748,6 +1775,47 @@ mod tests {
             HeaderValue::from_static("permessage-deflate"),
         );
         assert!(validate_websocket_response(&extension, &offer).is_err());
+    }
+
+    #[test]
+    fn address_conflict_retries_are_bounded_and_selective() {
+        let attempts = std::cell::Cell::new(0_usize);
+        let recovered = retry_addr_in_use(4, || {
+            let current = attempts.get() + 1;
+            attempts.set(current);
+            if current < 4 {
+                Err(io::Error::new(io::ErrorKind::AddrInUse, "contended"))
+            } else {
+                Ok(42_u8)
+            }
+        });
+        assert_eq!(recovered.ok(), Some(42));
+        assert_eq!(attempts.get(), 4);
+
+        let attempts = std::cell::Cell::new(0_usize);
+        let rejected = retry_addr_in_use::<()>(4, || {
+            attempts.set(attempts.get() + 1);
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not retryable",
+            ))
+        });
+        assert_eq!(
+            rejected.err().map(|error| error.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+        assert_eq!(attempts.get(), 1);
+
+        let attempts = std::cell::Cell::new(0_usize);
+        let exhausted = retry_addr_in_use::<()>(3, || {
+            attempts.set(attempts.get() + 1);
+            Err(io::Error::new(io::ErrorKind::AddrInUse, "contended"))
+        });
+        assert_eq!(
+            exhausted.err().map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        assert_eq!(attempts.get(), 3);
     }
 }
 
