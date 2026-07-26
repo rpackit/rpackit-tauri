@@ -46,19 +46,22 @@ error fails closed.
 
 The real-browser escape matrix actively attempts external top-level
 navigation, popup creation, a download, and an external URI scheme. The native
-probe selects only schemes registered with Windows and requires a distinct
-native-origin scheme event. External documents are replaced with a local `403`
-before network access, popups and downloads are denied, every observed
-external-scheme launch is cancelled, and the isolated download directory must
-remain empty. Native readback requires
-devtools, browser accelerator keys, and default context menus disabled; a
-valid unpacked-extension install must be explicitly rejected as unsupported.
-The shell fails before bootstrap on WebView2 environment or policy-registry
-overrides, repeats the policy check after creation, and rejects a profile
-containing `DevToolsActivePort`. The recorded WebView2 `150.0.4078.99` run
-passed this matrix with one document network block, one popup denial, one
-download cancellation, two external-scheme cancellations, and zero external
-collector requests.
+probe creates a random per-run URL protocol in a volatile current-user
+registry key, points it at a strictly scoped same-executable canary, self-tests
+the handler, and requires one native-origin scheme event. External documents
+are replaced with a local `403` before network access, popups and downloads
+are denied, every observed external-scheme launch is cancelled, the handler
+marker must remain absent, and the protocol registration must be removed and
+verified absent. The isolated download directory must remain empty. Native
+readback requires devtools, browser accelerator keys, and default context
+menus disabled; a valid unpacked-extension install must be explicitly
+rejected as unsupported. The shell fails before bootstrap on WebView2
+environment or policy-registry overrides, repeats the policy check after
+creation, and rejects a profile containing `DevToolsActivePort`. The recorded
+WebView2 `150.0.4078.99` run passed this matrix with one document network
+block, one popup denial, one download cancellation, one cancelled native
+external-scheme event with no canary launch, and zero external collector
+requests.
 
 Upstream response heads cross a raw admission guard before Hyper can interpret
 them. The guard rejects ambiguous `Content-Length`/`Transfer-Encoding`,

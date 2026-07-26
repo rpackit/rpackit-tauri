@@ -142,15 +142,18 @@ never put in the report.
 
 The active browser matrix does not infer these controls from configuration.
 The page attempts an external document, popup, download, and `mailto:` launch;
-native code separately selects URI schemes registered with Windows and queues
-them directly until a native-origin event is observed. The document request is
+native code separately creates a random per-run custom URL protocol as a
+volatile current-user registry key. The handler is the same executable in a
+strictly scoped canary mode; the harness self-tests that handler before
+queuing the exact URI once through native `Navigate`. The document request is
 replaced with a local `403` at `WebResourceRequested`, new windows are denied,
 downloads are cancelled into an isolated directory that must stay empty, and
 every `LaunchingExternalUriScheme` event is cancelled. The event's empty
-`InitiatingOrigin` proves the registered-scheme event came from the native
-`Navigate` probe rather than a delayed page callback. Native readback requires
-devtools, browser accelerator keys, and default context menus to be disabled.
-A valid unpacked extension must fail installation with the Windows
+`InitiatingOrigin` proves it came from the native probe rather than a delayed
+page callback. Cancellation must leave the handler marker absent, after which
+the registry key is explicitly removed and verified absent. Native readback
+requires devtools, browser accelerator keys, and default context menus to be
+disabled. A valid unpacked extension must fail installation with the Windows
 `ERROR_NOT_SUPPORTED` result.
 
 Before creation the shell rejects WebView2 environment overrides and checks
@@ -414,11 +417,12 @@ matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
 The active browser-escape matrix passed on the recorded development runtime:
 one external document was blocked before network, one popup and one download
-were denied, both observed external-scheme events were cancelled, native
-settings and extension rejection were verified, override sources were absent,
-and no `DevToolsActivePort` or external collector request was produced. The
-remaining release gates are crash profile persistence and the fixed-minimum
-runtime.
+were denied, the one native external-scheme event was cancelled without
+launching its verified canary handler, and the volatile registration was
+removed. Native settings and extension rejection were verified, override
+sources were absent, and no `DevToolsActivePort` or external collector request
+was produced. The remaining release gates are crash profile persistence and
+the fixed-minimum runtime.
 Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
 decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream

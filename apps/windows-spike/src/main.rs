@@ -7,9 +7,11 @@ mod report;
 use std::{
     collections::VecDeque,
     error::Error as StdError,
+    ffi::OsStr,
     fs, io,
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering},
@@ -40,8 +42,8 @@ use url::Url;
 use winreg::{
     RegKey,
     enums::{
-        HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
-        KEY_WOW64_64KEY,
+        HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_READ,
+        KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_OPTION_VOLATILE,
     },
 };
 
@@ -66,17 +68,10 @@ const WEBVIEW2_OVERRIDE_POLICY_KEYS: &[&str] = &[
     r"Software\Policies\Microsoft\Edge\WebView2\ReleaseChannelPreference",
 ];
 const WEBVIEW2_APP_USER_MODEL_ID: &str = "dev.rpackit.transport-spike";
-const PAGE_EXTERNAL_SCHEME_PROBE_URI: &str = "mailto:rpackit-browser-escape@example.invalid";
-const EXTERNAL_SCHEME_PROBE_CANDIDATES: &[(&str, &str)] = &[
-    ("ms-settings", "ms-settings:display"),
-    ("search-ms", "search-ms:query=rpackit-browser-escape"),
-    (
-        "microsoft-edge",
-        "microsoft-edge:https://example.invalid/rpackit-browser-escape",
-    ),
-    ("ms-windows-store", "ms-windows-store://home"),
-    ("mailto", PAGE_EXTERNAL_SCHEME_PROBE_URI),
-];
+const EXTERNAL_SCHEME_PREFIX: &str = "rpackit-browser-escape-";
+const EXTERNAL_SCHEME_CANARY_ARGUMENT: &str = "--external-scheme-canary";
+const EXTERNAL_SCHEME_CANARY_FILE: &str = "handler-launched.marker";
+const EXTERNAL_SCHEME_CANARY_CONTENT: &[u8] = b"rpackit external scheme handler launched\n";
 const EXTENSION_PROBE_MANIFEST: &str =
     r#"{"manifest_version":3,"name":"rpackit disabled-extension probe","version":"1.0.0"}"#;
 const PROFILE_SCAN_ENTRY_LIMIT: usize = 100_000;
@@ -86,7 +81,131 @@ struct HarnessOptions {
     report_path: PathBuf,
 }
 
+struct ExternalSchemeRegistration {
+    scheme: String,
+    registry_path: String,
+    uri: Url,
+    executable: PathBuf,
+    canary_path: PathBuf,
+    _canary_directory: tempfile::TempDir,
+    registered: bool,
+}
+
+impl ExternalSchemeRegistration {
+    fn create() -> io::Result<Self> {
+        let canary_directory = tempfile::Builder::new()
+            .prefix(EXTERNAL_SCHEME_PREFIX)
+            .tempdir()?;
+        let scheme = canary_directory
+            .path()
+            .file_name()
+            .and_then(OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| io::Error::other("external-scheme probe name is not Unicode"))?;
+        let registry_path = external_scheme_registry_path(&scheme)?;
+        let executable = std::env::current_exe()?;
+        let canary_path = canary_directory.path().join(EXTERNAL_SCHEME_CANARY_FILE);
+        let uri = Url::parse(&format!("{scheme}:probe"))
+            .map_err(|_| io::Error::other("invalid external-scheme probe URI"))?;
+
+        let mut registration = Self {
+            scheme,
+            registry_path,
+            uri,
+            executable,
+            canary_path,
+            _canary_directory: canary_directory,
+            registered: false,
+        };
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        let (protocol_key, _) = current_user.create_subkey_with_options_flags(
+            &registration.registry_path,
+            REG_OPTION_VOLATILE,
+            KEY_ALL_ACCESS,
+        )?;
+        registration.registered = true;
+        protocol_key.set_value("", &format!("URL:{} Protocol", registration.scheme))?;
+        protocol_key.set_value("URL Protocol", &String::new())?;
+        let (command_key, _) = protocol_key.create_subkey_with_options_flags(
+            r"shell\open\command",
+            REG_OPTION_VOLATILE,
+            KEY_ALL_ACCESS,
+        )?;
+        let command_line = format!(
+            "\"{}\" {} \"{}\" \"%1\"",
+            registration.executable.display(),
+            EXTERNAL_SCHEME_CANARY_ARGUMENT,
+            registration.canary_path.display()
+        );
+        command_key.set_value("", &command_line)?;
+        drop(command_key);
+        drop(protocol_key);
+
+        let classes = RegKey::predef(HKEY_CLASSES_ROOT);
+        if !registry_value_exists(&classes, 0, &registration.scheme, "URL Protocol")? {
+            return Err(io::Error::other(
+                "temporary external URI scheme is not visible through HKEY_CLASSES_ROOT",
+            ));
+        }
+
+        Ok(registration)
+    }
+
+    fn uri(&self) -> &Url {
+        &self.uri
+    }
+
+    fn verify_canary_handler(&self) -> io::Result<bool> {
+        let status = Command::new(&self.executable)
+            .arg(EXTERNAL_SCHEME_CANARY_ARGUMENT)
+            .arg(&self.canary_path)
+            .arg(self.uri.as_str())
+            .status()?;
+        if !status.success()
+            || fs::read(&self.canary_path).ok().as_deref() != Some(EXTERNAL_SCHEME_CANARY_CONTENT)
+        {
+            return Ok(false);
+        }
+        fs::remove_file(&self.canary_path)?;
+        Ok(true)
+    }
+
+    fn canary_absent(&self) -> io::Result<bool> {
+        self.canary_path.try_exists().map(|exists| !exists)
+    }
+
+    fn unregister(&mut self) -> io::Result<bool> {
+        if self.registered {
+            let current_user = RegKey::predef(HKEY_CURRENT_USER);
+            match current_user.delete_subkey_all(&self.registry_path) {
+                Ok(()) => self.registered = false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.registered = false;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let classes = RegKey::predef(HKEY_CLASSES_ROOT);
+        registry_value_exists(&classes, 0, &self.scheme, "URL Protocol").map(|present| !present)
+    }
+}
+
+impl Drop for ExternalSchemeRegistration {
+    fn drop(&mut self) {
+        if self.registered
+            && external_scheme_registry_path(&self.scheme)
+                .is_ok_and(|path| path == self.registry_path)
+        {
+            let _ = RegKey::predef(HKEY_CURRENT_USER).delete_subkey_all(&self.registry_path);
+            self.registered = false;
+        }
+    }
+}
+
 fn main() {
+    if let Some(exit_code) = run_external_scheme_canary_mode() {
+        std::process::exit(exit_code);
+    }
     let Ok(options) = parse_options() else {
         eprintln!("usage: rpackit-windows-spike [--report <path>]");
         std::process::exit(2);
@@ -119,6 +238,25 @@ fn main() {
     std::process::exit(process_exit_code.load(Ordering::SeqCst));
 }
 
+fn run_external_scheme_canary_mode() -> Option<i32> {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() != Some(OsStr::new(EXTERNAL_SCHEME_CANARY_ARGUMENT)) {
+        return None;
+    }
+    let Some(canary_path) = arguments.next().map(PathBuf::from) else {
+        return Some(2);
+    };
+    if arguments.next().is_none()
+        || arguments.next().is_some()
+        || !external_scheme_canary_path_is_allowed(&canary_path)
+    {
+        return Some(2);
+    }
+    Some(i32::from(
+        fs::write(canary_path, EXTERNAL_SCHEME_CANARY_CONTENT).is_err(),
+    ))
+}
+
 fn parse_options() -> Result<HarnessOptions, ()> {
     let mut arguments = std::env::args_os().skip(1);
     let mut report_path = None;
@@ -148,7 +286,13 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     if !registry_overrides_absent_before_creation {
         return Err(io::Error::other("WebView2 registry override is not allowed").into());
     }
-    let external_scheme_probe_uris = registered_external_scheme_probe_uris()?;
+    let mut external_scheme_registration = ExternalSchemeRegistration::create()?;
+    let external_scheme_handler_canary_verified =
+        external_scheme_registration.verify_canary_handler()?;
+    if !external_scheme_handler_canary_verified {
+        return Err(io::Error::other("external-scheme canary self-test failed").into());
+    }
+    let external_scheme_probe_uris = vec![external_scheme_registration.uri().clone()];
 
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
@@ -234,6 +378,9 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     })
     .await
     .is_ok();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let external_scheme_handler_canary_absent = external_scheme_registration.canary_absent()?;
+    let external_scheme_registration_removed = external_scheme_registration.unregister()?;
     let registry_overrides_absent_after_creation = webview_registry_overrides_absent()?;
     let devtools_active_port_absent = file_named_absent(&profile_path, "DevToolsActivePort")?;
     let download_directory_empty = directory_is_empty(download_probe_directory.path())?;
@@ -244,6 +391,10 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         registry_overrides_absent_after_creation,
         devtools_active_port_absent,
         download_directory_empty,
+        true,
+        external_scheme_handler_canary_verified,
+        external_scheme_handler_canary_absent,
+        external_scheme_registration_removed,
     );
     let upstream_snapshot = upstream.snapshot().await;
     let collector_snapshot = collector.snapshot();
@@ -432,10 +583,9 @@ async fn build_window(
                 navigation_escape_probe.record_navigation_block();
                 return false;
             }
-            if url.as_str() == PAGE_EXTERNAL_SCHEME_PROBE_URI
-                || external_scheme_navigation_uris
-                    .iter()
-                    .any(|candidate| candidate == url)
+            if external_scheme_navigation_uris
+                .iter()
+                .any(|candidate| candidate == url)
             {
                 return true;
             }
@@ -689,29 +839,40 @@ fn webview_registry_overrides_absent() -> io::Result<bool> {
     Ok(true)
 }
 
-fn registered_external_scheme_probe_uris() -> io::Result<Vec<Url>> {
-    let classes = RegKey::predef(HKEY_CLASSES_ROOT);
-    external_scheme_probe_uris(|scheme| registry_value_exists(&classes, 0, scheme, "URL Protocol"))
-}
-
-fn external_scheme_probe_uris(
-    mut is_registered: impl FnMut(&str) -> io::Result<bool>,
-) -> io::Result<Vec<Url>> {
-    let mut uris = Vec::new();
-    for (scheme, uri) in EXTERNAL_SCHEME_PROBE_CANDIDATES {
-        if is_registered(scheme)? {
-            uris.push(
-                Url::parse(uri)
-                    .map_err(|_| io::Error::other("invalid external-scheme probe URI"))?,
-            );
-        }
-    }
-    if uris.is_empty() {
+fn external_scheme_registry_path(scheme: &str) -> io::Result<String> {
+    if !scheme.starts_with(EXTERNAL_SCHEME_PREFIX)
+        || !scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
         return Err(io::Error::other(
-            "no registered external URI scheme is available for the browser escape probe",
+            "unsafe temporary external-scheme registry name",
         ));
     }
-    Ok(uris)
+    Ok(format!(r"Software\Classes\{scheme}"))
+}
+
+fn external_scheme_canary_path_is_allowed(path: &Path) -> bool {
+    if path.file_name() != Some(OsStr::new(EXTERNAL_SCHEME_CANARY_FILE)) {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !parent
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with(EXTERNAL_SCHEME_PREFIX))
+    {
+        return false;
+    }
+    let Ok(canonical_parent) = fs::canonicalize(parent) else {
+        return false;
+    };
+    let Ok(canonical_temp) = fs::canonicalize(std::env::temp_dir()) else {
+        return false;
+    };
+    canonical_parent.parent() == Some(canonical_temp.as_path())
 }
 
 fn webview_registry_app_ids(executable: &Path) -> Vec<String> {
@@ -841,12 +1002,10 @@ fn resolution_allows_webview(resolution: &HostResolution) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{io, path::Path, sync::Arc};
-
-    use rpackit_transport::{Secret, TransportSecrets};
-    use url::Url;
+    use std::{ffi::OsStr, io, path::Path, sync::Arc};
 
     use super::text_is_secret_free;
+    use rpackit_transport::{Secret, TransportSecrets};
 
     #[test]
     fn embedded_secret_is_detected_without_exact_string_equality() {
@@ -906,22 +1065,36 @@ mod tests {
     }
 
     #[test]
-    fn external_scheme_probe_uses_only_registered_candidates() {
-        let result = super::external_scheme_probe_uris(|scheme| {
-            Ok(matches!(scheme, "ms-settings" | "mailto"))
-        });
-        assert!(result.is_ok());
-        let uris = result.unwrap_or_default();
-        assert_eq!(
-            uris.iter().map(Url::as_str).collect::<Vec<_>>(),
-            [
-                "ms-settings:display",
-                "mailto:rpackit-browser-escape@example.invalid",
-            ]
+    fn external_scheme_registration_and_canary_paths_are_strictly_scoped() {
+        let directory = tempfile::Builder::new()
+            .prefix(super::EXTERNAL_SCHEME_PREFIX)
+            .tempdir();
+        assert!(directory.is_ok());
+        let directory = directory.ok();
+        assert!(directory.is_some());
+        let Some(directory) = directory else {
+            return;
+        };
+        let scheme = directory
+            .path()
+            .file_name()
+            .and_then(OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        let registry_path = super::external_scheme_registry_path(&scheme);
+        assert!(registry_path.is_ok());
+        assert!(
+            registry_path
+                .as_deref()
+                .is_ok_and(|path| path.starts_with(r"Software\Classes\rpackit-browser-escape-"))
         );
+        assert!(super::external_scheme_registry_path(r"..\unsafe").is_err());
 
-        let absent = super::external_scheme_probe_uris(|_| Ok(false));
-        assert!(absent.is_err());
+        let canary = directory.path().join(super::EXTERNAL_SCHEME_CANARY_FILE);
+        assert!(super::external_scheme_canary_path_is_allowed(&canary));
+        assert!(!super::external_scheme_canary_path_is_allowed(
+            &directory.path().join("other.marker")
+        ));
     }
 
     #[test]

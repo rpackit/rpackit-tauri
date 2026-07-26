@@ -125,15 +125,16 @@ All notable changes to this pre-release repository are documented here.
   the document request to be replaced before network access, popup and
   download denial, cancellation of every observed external-scheme event, and
   an empty isolated download directory; and confirms zero escape requests at
-  external collectors. The native scheme probe selects only protocols
-  registered with Windows and requires an event whose empty
-  `InitiatingOrigin` proves it came from native `Navigate`, avoiding a
-  dependency on an installed mail client. Native evidence reads back disabled
-  devtools, browser accelerators, and default context menus, actively requires
-  a valid unpacked extension install to fail with `ERROR_NOT_SUPPORTED`,
-  rejects WebView2 environment and policy-registry overrides before bootstrap,
-  repeats policy checks after creation, and requires no `DevToolsActivePort`
-  in the profile.
+  external collectors. The native probe creates a random volatile per-user URL
+  protocol whose same-executable handler writes only a strictly scoped canary,
+  self-tests that handler, and requires an event whose empty
+  `InitiatingOrigin` proves it came from native `Navigate`. Cancellation must
+  leave the canary absent; the registration is explicitly removed and verified
+  absent. Native evidence reads back disabled devtools, browser accelerators,
+  and default context menus, actively requires a valid unpacked extension
+  install to fail with `ERROR_NOT_SUPPORTED`, rejects WebView2 environment and
+  policy-registry overrides before bootstrap, repeats policy checks after
+  creation, and requires no `DevToolsActivePort` in the profile.
 - Recorded a passing development-runtime run on WebView2 `150.0.4078.99`,
   including the clean profile-recreation gate and the three-contender,
   four-path listener-overlap gate. All three wildcard binds succeeded while
@@ -153,7 +154,8 @@ All notable changes to this pre-release repository are documented here.
   handshakes and zero credential leakage; both debug and release runs measured
   997 ms client-to-upstream and 934 ms upstream-to-client. The same runtime
   passed the browser-escape matrix with one document network block, one popup
-  denial, one download cancellation, two external-scheme cancellations, an
+  denial, one download cancellation, one cancelled native external-scheme
+  event with no canary launch, a removed volatile protocol registration, an
   empty download directory, and zero external collector requests. This is not
   a fixed-minimum or release-readiness claim.
 

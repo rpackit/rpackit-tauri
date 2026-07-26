@@ -102,10 +102,12 @@ on WebView2 `150.0.4078.99` established:
 - active browser-escape probes attempted external top-level navigation, a
   popup, a download, and a `mailto:` launch. The external document was
   replaced locally before network access, the popup and download were denied,
-  both observed external-scheme events were cancelled, including a native
-  attempt selected from URI schemes registered with Windows, the isolated
-  download directory stayed empty, and both external collectors received zero
-  escape requests;
+  and the page-origin scheme launch was denied. A random per-run volatile
+  per-user URL protocol was self-tested with a scoped same-executable canary;
+  its one native-origin WebView2 event was cancelled, the handler marker
+  remained absent, and the registration was removed and verified absent. The
+  isolated download directory stayed empty, and both external collectors
+  received zero escape requests;
 - native readback confirmed devtools, browser accelerator keys, and default
   context menus disabled. A valid unpacked-extension install was explicitly
   rejected as unsupported, WebView2 environment and policy-registry overrides

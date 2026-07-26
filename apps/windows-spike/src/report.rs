@@ -184,6 +184,10 @@ impl BrowserEscapeProbe {
         registry_overrides_absent_after_creation: bool,
         devtools_active_port_absent: bool,
         download_directory_empty: bool,
+        external_scheme_registration_volatile: bool,
+        external_scheme_handler_canary_verified: bool,
+        external_scheme_handler_canary_absent: bool,
+        external_scheme_registration_removed: bool,
     ) -> BrowserEscapeEvidence {
         BrowserEscapeEvidence {
             probe_completed,
@@ -225,6 +229,10 @@ impl BrowserEscapeProbe {
             registry_overrides_absent_after_creation,
             devtools_active_port_absent,
             download_directory_empty,
+            external_scheme_registration_volatile,
+            external_scheme_handler_canary_verified,
+            external_scheme_handler_canary_absent,
+            external_scheme_registration_removed,
         }
     }
 }
@@ -257,6 +265,10 @@ pub struct BrowserEscapeEvidence {
     pub registry_overrides_absent_after_creation: bool,
     pub devtools_active_port_absent: bool,
     pub download_directory_empty: bool,
+    pub external_scheme_registration_volatile: bool,
+    pub external_scheme_handler_canary_verified: bool,
+    pub external_scheme_handler_canary_absent: bool,
+    pub external_scheme_registration_removed: bool,
 }
 
 impl BrowserEscapeEvidence {
@@ -294,6 +306,10 @@ impl BrowserEscapeEvidence {
             && self.registry_overrides_absent_after_creation
             && self.devtools_active_port_absent
             && self.download_directory_empty
+            && self.external_scheme_registration_volatile
+            && self.external_scheme_handler_canary_verified
+            && self.external_scheme_handler_canary_absent
+            && self.external_scheme_registration_removed
             && route("/download/escape") == 1
             && collector.navigation_escape_requests == 0
             && collector.popup_escape_requests == 0
@@ -1155,9 +1171,8 @@ mod tests {
         assert!(!report.phase1_release_ready);
     }
 
-    #[test]
-    fn browser_escape_gap_closes_only_with_active_fail_closed_evidence() {
-        let evidence = BrowserEscapeEvidence {
+    fn passing_browser_escape_evidence() -> BrowserEscapeEvidence {
+        BrowserEscapeEvidence {
             probe_completed: true,
             navigation_block_callbacks: 1,
             navigation_network_blocks: 1,
@@ -1181,7 +1196,16 @@ mod tests {
             registry_overrides_absent_after_creation: true,
             devtools_active_port_absent: true,
             download_directory_empty: true,
-        };
+            external_scheme_registration_volatile: true,
+            external_scheme_handler_canary_verified: true,
+            external_scheme_handler_canary_absent: true,
+            external_scheme_registration_removed: true,
+        }
+    }
+
+    #[test]
+    fn browser_escape_gap_closes_only_with_active_fail_closed_evidence() {
+        let evidence = passing_browser_escape_evidence();
         let browser = BrowserReport {
             navigation_escape_attempted: true,
             popup_escape_attempted: true,
