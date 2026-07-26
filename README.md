@@ -99,6 +99,17 @@ on WebView2 `150.0.4078.99` established:
 - JavaScript observed neither `P` nor a secret-shaped value, the child
   hostname received no proxy cookie, and an external redirect collector
   received no credential;
+- active browser-escape probes attempted external top-level navigation, a
+  popup, a download, and a `mailto:` launch. The external document was
+  replaced locally before network access, the popup and download were denied,
+  both observed external-scheme events were cancelled, the isolated download
+  directory stayed empty, and both external collectors received zero escape
+  requests;
+- native readback confirmed devtools, browser accelerator keys, and default
+  context menus disabled. A valid unpacked-extension install was explicitly
+  rejected as unsupported, WebView2 environment and policy-registry overrides
+  were absent before and after creation, and the profile contained no
+  `DevToolsActivePort`;
 - process arguments and environment were secret-free, and clean shutdown
   removed the session cookie, queued browsing-data cleanup, and destroyed the
   WebView; recreating a WebView with the same data directory after clean
@@ -116,9 +127,12 @@ which reserves every name under `.localhost` for loopback, and Chromium's
 source-level rule to
 [`Always treat .localhost as loopback`](https://chromium.googlesource.com/chromium/src/+/5d131a1fd9b808c5fd08c45f8299e669b13ec393%5E%21/).
 [WebView2 uses the Microsoft Edge/Chromium runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/).
-The shell rejects any WebView2 environment override that can replace the
-runtime or resolver arguments. A system probe that ever observes a
-non-loopback answer stops before a WebView or `B` request is created.
+The shell rejects WebView2 environment overrides that can replace the runtime,
+profile, channel, or browser arguments. It also checks the machine and user
+WebView2 policy-registry views for the application, executable, and wildcard
+identities before and after WebView creation. A system probe that ever
+observes a non-loopback answer stops before a WebView or `B` request is
+created.
 
 The real WebView also loaded the authenticated bootstrap and application
 through a proxy that listens only on loopback and rejects any non-loopback
@@ -327,9 +341,7 @@ Phase 1 release gaps include:
 - the complete matrix has not run against a reviewed fixed minimum WebView2
   runtime;
 - forced-crash profile recreation has not proven that `P` is unrecoverable
-  from disk after a native-process crash;
-- configured navigation, popup, download, custom-scheme, devtools, extension,
-  and remote-debugging controls have not all been exercised end to end.
+  from disk after a native-process crash.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

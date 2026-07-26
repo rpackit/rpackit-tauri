@@ -5,9 +5,11 @@ mod native_webview;
 mod report;
 
 use std::{
+    collections::VecDeque,
     error::Error as StdError,
-    io,
-    path::PathBuf,
+    fs, io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering},
@@ -15,7 +17,9 @@ use std::{
     time::Duration,
 };
 
-use report::{AcceptanceReport, CookieEvidence, DevelopmentGates, write_failure_report};
+use report::{
+    AcceptanceReport, BrowserEscapeProbe, CookieEvidence, DevelopmentGates, write_failure_report,
+};
 use rpackit_transport::{
     HostResolution, ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, TransportSecrets,
 };
@@ -27,12 +31,16 @@ use rpackit_transport_testkit::{
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
     webview::{
-        NewWindowResponse, PageLoadEvent,
+        DownloadEvent, NewWindowResponse, PageLoadEvent,
         cookie::{Cookie, Expiration, SameSite},
     },
 };
 use tokio::time::timeout;
 use url::Url;
+use winreg::{
+    RegKey,
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY},
+};
 
 type HarnessError = Box<dyn StdError + Send + Sync>;
 
@@ -40,10 +48,24 @@ const FORBIDDEN_WEBVIEW_ENVIRONMENT_VARIABLES: &[&str] = &[
     "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
     "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
     "WEBVIEW2_USER_DATA_FOLDER",
+    "WEBVIEW2_CHANNEL_SEARCH_KIND",
+    "WEBVIEW2_RELEASE_CHANNELS",
     "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
     "WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER",
     "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER",
 ];
+const WEBVIEW2_OVERRIDE_POLICY_KEYS: &[&str] = &[
+    r"Software\Policies\Microsoft\Edge\WebView2\BrowserExecutableFolder",
+    r"Software\Policies\Microsoft\Edge\WebView2\ChannelSearchKind",
+    r"Software\Policies\Microsoft\Edge\WebView2\ReleaseChannels",
+    r"Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments",
+    r"Software\Policies\Microsoft\Edge\WebView2\UserDataFolder",
+    r"Software\Policies\Microsoft\Edge\WebView2\ReleaseChannelPreference",
+];
+const WEBVIEW2_APP_USER_MODEL_ID: &str = "dev.rpackit.transport-spike";
+const EXTENSION_PROBE_MANIFEST: &str =
+    r#"{"manifest_version":3,"name":"rpackit disabled-extension probe","version":"1.0.0"}"#;
+const PROFILE_SCAN_ENTRY_LIMIT: usize = 100_000;
 
 #[derive(Clone, Debug)]
 struct HarnessOptions {
@@ -108,6 +130,10 @@ fn parse_options() -> Result<HarnessOptions, ()> {
 #[allow(clippy::too_many_lines)]
 async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32, HarnessError> {
     reject_webview_environment_overrides()?;
+    let registry_overrides_absent_before_creation = webview_registry_overrides_absent()?;
+    if !registry_overrides_absent_before_creation {
+        return Err(io::Error::other("WebView2 registry override is not allowed").into());
+    }
 
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
@@ -134,8 +160,29 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         .prefix("rpackit-webview2-spike-")
         .tempdir()?;
     let profile_path = profile.path().to_path_buf();
+    let extension_probe_directory = tempfile::Builder::new()
+        .prefix("rpackit-disabled-extension-")
+        .tempdir()?;
+    fs::write(
+        extension_probe_directory.path().join("manifest.json"),
+        EXTENSION_PROBE_MANIFEST,
+    )?;
+    let download_probe_directory = tempfile::Builder::new()
+        .prefix("rpackit-blocked-download-")
+        .tempdir()?;
     let evidence = Arc::new(Mutex::new(CookieEvidence::default()));
-    let window = build_window(&app, &proxy, profile_path.clone(), Arc::clone(&evidence)).await?;
+    let browser_escape_probe = Arc::new(BrowserEscapeProbe::default());
+    let window = build_window(
+        &app,
+        &proxy,
+        collector.address(),
+        profile_path.clone(),
+        extension_probe_directory.path().to_path_buf(),
+        download_probe_directory.path().to_path_buf(),
+        Arc::clone(&evidence),
+        Arc::clone(&browser_escape_probe),
+    )
+    .await?;
 
     let browser_result = timeout(Duration::from_secs(30), upstream.wait_for_browser_report()).await;
     let browser_report_received = browser_result.is_ok();
@@ -143,6 +190,28 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     update_evidence(&evidence, |item| {
         item.browser_report_received = browser_report_received;
     });
+    native_webview::attempt_external_scheme(&window, Arc::clone(&browser_escape_probe))?;
+    let browser_escape_probe_completed = timeout(Duration::from_secs(5), async {
+        loop {
+            if browser_escape_probe.runtime_attempts_observed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let registry_overrides_absent_after_creation = webview_registry_overrides_absent()?;
+    let devtools_active_port_absent = file_named_absent(&profile_path, "DevToolsActivePort")?;
+    let download_directory_empty = directory_is_empty(download_probe_directory.path())?;
+    let browser_escape_evidence = browser_escape_probe.snapshot(
+        browser_escape_probe_completed,
+        true,
+        registry_overrides_absent_before_creation,
+        registry_overrides_absent_after_creation,
+        devtools_active_port_absent,
+        download_directory_empty,
+    );
     let upstream_snapshot = upstream.snapshot().await;
     let collector_snapshot = collector.snapshot();
     let cookie_evidence = evidence
@@ -183,6 +252,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &request_body_limits,
         &response_resource_limits,
         &websocket_rate_limits,
+        &browser_escape_evidence,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -202,6 +272,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         request_body_limits,
         response_resource_limits,
         websocket_rate_limits,
+        browser_escape_evidence,
         cookie_evidence,
         browser_report,
         upstream_snapshot,
@@ -257,14 +328,23 @@ async fn build_lifecycle_sentinel(
 // Keeping the security controls adjacent makes this construction boundary
 // auditable as one unit.
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 async fn build_window(
     app: &AppHandle<Wry>,
     proxy: &RunningProxy,
+    collector_address: SocketAddr,
     profile_path: PathBuf,
+    extension_probe_path: PathBuf,
+    download_probe_path: PathBuf,
     evidence: Arc<Mutex<CookieEvidence>>,
+    browser_escape_probe: Arc<BrowserEscapeProbe>,
 ) -> Result<WebviewWindow<Wry>, HarnessError> {
     let bootstrap_url = Url::parse(&proxy.address().bootstrap_url())?;
     let root_url = Url::parse(&proxy.address().root_url())?;
+    let navigation_escape_url =
+        Url::parse(&format!("http://{collector_address}/escape/navigation"))?;
+    let popup_escape_url = Url::parse(&format!("http://{collector_address}/escape/popup"))?;
+    let download_escape_url = root_url.join("download/escape")?;
     let expected_host = proxy.address().hostname().to_owned();
     let expected_port = proxy.address().port();
     let session = proxy.secrets().session();
@@ -275,10 +355,19 @@ async fn build_window(
     let main_thread_app = app.clone();
     let builder_app = app.clone();
     let native_bootstrap_url = bootstrap_url.clone();
+    let native_browser_escape_probe = Arc::clone(&browser_escape_probe);
+    let native_allowed_proxy_origin = root_url.clone();
+    let native_navigation_escape_url = navigation_escape_url.clone();
     let page_bootstrap_queued = Arc::clone(&bootstrap_queued);
     main_thread_app.run_on_main_thread(move || {
         let navigation_host = expected_host.clone();
         let navigation_state = Arc::clone(&state);
+        let navigation_escape = navigation_escape_url.clone();
+        let navigation_escape_probe = Arc::clone(&browser_escape_probe);
+        let popup_escape = popup_escape_url.clone();
+        let popup_escape_probe = Arc::clone(&browser_escape_probe);
+        let download_escape = download_escape_url.clone();
+        let download_escape_probe = Arc::clone(&browser_escape_probe);
         let page_bootstrap = bootstrap_url.clone();
         let page_root = root_url.clone();
         let page_state = Arc::clone(&state);
@@ -300,6 +389,13 @@ async fn build_window(
         .disable_drag_drop_handler()
         .zoom_hotkeys_enabled(false)
         .on_navigation(move |url| {
+            if url == &navigation_escape {
+                navigation_escape_probe.record_navigation_block();
+                return false;
+            }
+            if url.as_str() == native_webview::EXTERNAL_SCHEME_PROBE_URI {
+                return true;
+            }
             let proxy_origin = url.scheme() == "http"
                 && url.host_str() == Some(navigation_host.as_str())
                 && url.port() == Some(expected_port);
@@ -309,8 +405,20 @@ async fn build_window(
                 && url.username().is_empty()
                 && url.password().is_none()
         })
-        .on_new_window(|_, _| NewWindowResponse::Deny)
-        .on_download(|_, _| false)
+        .on_new_window(move |url, _| {
+            if url == popup_escape {
+                popup_escape_probe.record_popup_deny();
+            }
+            NewWindowResponse::Deny
+        })
+        .on_download(move |_, event| {
+            if let DownloadEvent::Requested { url, .. } = event
+                && url == download_escape
+            {
+                download_escape_probe.record_download_cancel();
+            }
+            false
+        })
         .on_page_load(move |window, payload| {
             if payload.event() != PageLoadEvent::Finished {
                 return;
@@ -366,6 +474,27 @@ async fn build_window(
         .await
         .map_err(|_| io::Error::other("window creation channel closed"))?
         .map_err(|()| io::Error::other("secured WebView2 window creation failed"))?;
+    native_webview::install_browser_escape_guards(
+        &window,
+        Arc::clone(&native_browser_escape_probe),
+        native_allowed_proxy_origin,
+        native_navigation_escape_url,
+        extension_probe_path,
+        download_probe_path,
+    )?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if native_browser_escape_probe.native_hardening_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| io::Error::other("native browser hardening setup timed out"))?;
+    if !native_browser_escape_probe.native_hardening_succeeded() {
+        return Err(io::Error::other("native browser hardening setup failed").into());
+    }
     native_webview::navigate_with_bootstrap_header(
         &window,
         native_bootstrap_url,
@@ -496,6 +625,116 @@ fn webview_environment_override_present(is_present: impl Fn(&str) -> bool) -> bo
         .any(is_present)
 }
 
+fn webview_registry_overrides_absent() -> io::Result<bool> {
+    let executable = std::env::current_exe()?;
+    let app_ids = webview_registry_app_ids(&executable);
+    let roots = [
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+        RegKey::predef(HKEY_CURRENT_USER),
+    ];
+    let views = [KEY_WOW64_64KEY, KEY_WOW64_32KEY];
+    for root in roots {
+        for view in views {
+            if webview_registry_override_present(&app_ids, |subkey, value_name| {
+                registry_value_exists(&root, view, subkey, value_name)
+            })? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn webview_registry_app_ids(executable: &Path) -> Vec<String> {
+    let mut app_ids = vec![WEBVIEW2_APP_USER_MODEL_ID.to_owned()];
+    if let Some(file_name) = executable.file_name().and_then(|name| name.to_str()) {
+        push_unique(&mut app_ids, file_name);
+    }
+    if let Some(file_stem) = executable.file_stem().and_then(|name| name.to_str()) {
+        push_unique(&mut app_ids, file_stem);
+    }
+    push_unique(&mut app_ids, "*");
+    app_ids
+}
+
+fn push_unique(items: &mut Vec<String>, value: &str) {
+    if !items.iter().any(|item| item.eq_ignore_ascii_case(value)) {
+        items.push(value.to_owned());
+    }
+}
+
+fn webview_registry_override_present(
+    app_ids: &[String],
+    mut value_exists: impl FnMut(&str, &str) -> io::Result<bool>,
+) -> io::Result<bool> {
+    for subkey in WEBVIEW2_OVERRIDE_POLICY_KEYS {
+        for app_id in app_ids {
+            if value_exists(subkey, app_id)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn registry_value_exists(
+    root: &RegKey,
+    view: u32,
+    subkey: &str,
+    value_name: &str,
+) -> io::Result<bool> {
+    let key = match root.open_subkey_with_flags(subkey, KEY_READ | view) {
+        Ok(key) => key,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match key.get_raw_value(value_name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn file_named_absent(root: &Path, file_name: &str) -> io::Result<bool> {
+    let mut directories = VecDeque::from([root.to_path_buf()]);
+    let mut entries_seen = 0_usize;
+    while let Some(directory) = directories.pop_front() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            entries_seen = entries_seen.saturating_add(1);
+            if entries_seen > PROFILE_SCAN_ENTRY_LIMIT {
+                return Err(io::Error::other(
+                    "WebView2 profile scan exceeded its entry limit",
+                ));
+            }
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(file_name))
+            {
+                return Ok(false);
+            }
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() && !file_type.is_symlink() {
+                directories.push_back(entry.path());
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn directory_is_empty(directory: &Path) -> io::Result<bool> {
+    fs::read_dir(directory)?
+        .next()
+        .transpose()
+        .map(|entry| entry.is_none())
+}
+
 fn is_bundled_placeholder(url: &Url) -> bool {
     let bundled_origin =
         (url.scheme() == "tauri" && url.host_str() == Some("localhost") && url.port().is_none())
@@ -533,7 +772,7 @@ fn resolution_allows_webview(resolution: &HostResolution) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{io, path::Path, sync::Arc};
 
     use rpackit_transport::{Secret, TransportSecrets};
 
@@ -561,6 +800,39 @@ mod tests {
         assert!(super::webview_environment_override_present(|name| {
             name == "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER"
         }));
+        assert!(super::webview_environment_override_present(|name| {
+            name == "WEBVIEW2_CHANNEL_SEARCH_KIND"
+        }));
+        assert!(super::webview_environment_override_present(|name| {
+            name == "WEBVIEW2_RELEASE_CHANNELS"
+        }));
+    }
+
+    #[test]
+    fn registry_override_candidates_cover_app_executable_and_wildcard() {
+        let app_ids = super::webview_registry_app_ids(Path::new(
+            r"C:\Program Files\rpackit\rpackit-windows-spike.exe",
+        ));
+        assert!(app_ids.iter().any(|id| id == "dev.rpackit.transport-spike"));
+        assert!(app_ids.iter().any(|id| id == "rpackit-windows-spike.exe"));
+        assert!(app_ids.iter().any(|id| id == "rpackit-windows-spike"));
+        assert!(app_ids.iter().any(|id| id == "*"));
+
+        let detected = super::webview_registry_override_present(&app_ids, |subkey, value_name| {
+            Ok(subkey.ends_with("AdditionalBrowserArguments") && value_name == "*")
+        });
+        assert!(detected.is_ok_and(|present| present));
+
+        let absent = super::webview_registry_override_present(&app_ids, |_, _| Ok(false));
+        assert!(absent.is_ok_and(|present| !present));
+
+        let failed = super::webview_registry_override_present(&app_ids, |_, _| {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        });
+        assert_eq!(
+            failed.err().map(|error| error.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
     }
 
     #[test]

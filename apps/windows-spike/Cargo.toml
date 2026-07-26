@@ -23,6 +23,7 @@ tokio.workspace = true
 url.workspace = true
 webview2-com.workspace = true
 windows.workspace = true
+winreg.workspace = true
 zeroize.workspace = true
 
 [lints]

@@ -29,7 +29,8 @@ use futures_util::{SinkExt as _, StreamExt as _, stream};
 use http::{
     HeaderValue, Request, Response, StatusCode,
     header::{
-        CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, SET_COOKIE,
+        CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE,
+        LOCATION, ORIGIN, SET_COOKIE,
     },
 };
 use http_body::Frame;
@@ -169,6 +170,14 @@ pub struct BrowserReport {
     pub external_redirect_completed: bool,
     /// A child-host request reached the collector.
     pub child_host_request_completed: bool,
+    /// JavaScript issued the hostile top-level navigation probe.
+    pub navigation_escape_attempted: bool,
+    /// JavaScript issued the hostile popup probe.
+    pub popup_escape_attempted: bool,
+    /// JavaScript issued the attachment-download probe.
+    pub download_escape_attempted: bool,
+    /// JavaScript issued the external URI-scheme probe.
+    pub external_scheme_escape_attempted: bool,
 }
 
 /// Secret-free request evidence captured by the mock Shiny upstream.
@@ -213,6 +222,10 @@ pub struct CollectorSnapshot {
     pub external_redirect_requests: u64,
     /// Requests made to a child of the random proxy hostname.
     pub child_host_requests: u64,
+    /// Hostile top-level navigations that escaped the `WebView`.
+    pub navigation_escape_requests: u64,
+    /// Hostile popup targets that escaped the `WebView`.
+    pub popup_escape_requests: u64,
 }
 
 /// Secret-free evidence for one single-stack wildcard-listener overlap probe.
@@ -2342,6 +2355,8 @@ struct CollectorState {
     bootstrap_header_leaks: AtomicU64,
     external_redirect_requests: AtomicU64,
     child_host_requests: AtomicU64,
+    navigation_escape_requests: AtomicU64,
+    popup_escape_requests: AtomicU64,
 }
 
 /// Running external redirect collector.
@@ -2392,6 +2407,11 @@ impl ExternalCollector {
                 .external_redirect_requests
                 .load(Ordering::Relaxed),
             child_host_requests: self.state.child_host_requests.load(Ordering::Relaxed),
+            navigation_escape_requests: self
+                .state
+                .navigation_escape_requests
+                .load(Ordering::Relaxed),
+            popup_escape_requests: self.state.popup_escape_requests.load(Ordering::Relaxed),
         }
     }
 
@@ -2551,6 +2571,14 @@ fn handle_collector(request: &Request<Incoming>, state: &CollectorState) -> Resp
     if request.uri().path() == "/child-cookie-check" {
         state.child_host_requests.fetch_add(1, Ordering::Relaxed);
     }
+    if request.uri().path() == "/escape/navigation" {
+        state
+            .navigation_escape_requests
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    if request.uri().path() == "/escape/popup" {
+        state.popup_escape_requests.fetch_add(1, Ordering::Relaxed);
+    }
     response(StatusCode::NO_CONTENT, "", "text/plain")
 }
 
@@ -2688,6 +2716,7 @@ async fn handle_upstream(
             Err(_) => response(StatusCode::BAD_REQUEST, "body rejected", "text/plain"),
         },
         "/api/stream" => stream_response(),
+        "/download/escape" => download_escape_response(),
         "/redirect/internal" => redirect_response(&format!("http://{upstream_address}/api/data")),
         "/redirect/external" => redirect_response(&format!("http://{external_collector}/collect")),
         "/cookies/app" => cookie_response("application_cookie=ok; Domain=127.0.0.1; HttpOnly"),
@@ -2756,6 +2785,19 @@ fn root_response(external_collector: SocketAddr) -> Response<TestBody> {
             external_collector.port()
         ))
         .unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'")),
+    );
+    response
+}
+
+fn download_escape_response() -> Response<TestBody> {
+    let mut response = response(
+        StatusCode::OK,
+        "blocked browser download probe",
+        "application/octet-stream",
+    );
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"rpackit-browser-escape-probe.bin\""),
     );
     response
 }
@@ -2862,7 +2904,11 @@ const APP_SCRIPT: &str = r#"
     proxyCookieVisible: false,
     secretShapeVisible: false,
     externalRedirectCompleted: false,
-    childHostRequestCompleted: false
+    childHostRequestCompleted: false,
+    navigationEscapeAttempted: false,
+    popupEscapeAttempted: false,
+    downloadEscapeAttempted: false,
+    externalSchemeEscapeAttempted: false
   };
 
   const finish = async () => {
@@ -2923,6 +2969,30 @@ const APP_SCRIPT: &str = r#"
       } catch (_) {
         result.childHostRequestCompleted = false;
       }
+      const collector = new URL(
+        document.querySelector('meta[name="external-collector"]').content
+      );
+      result.navigationEscapeAttempted = true;
+      location.assign(new URL("/escape/navigation", collector));
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      result.popupEscapeAttempted = true;
+      window.open(new URL("/escape/popup", collector), "_blank");
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      result.downloadEscapeAttempted = true;
+      const download = document.createElement("a");
+      download.href = "/download/escape";
+      download.download = "rpackit-browser-escape-probe.bin";
+      download.hidden = true;
+      document.body.appendChild(download);
+      download.click();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      download.remove();
+
+      result.externalSchemeEscapeAttempted = true;
+      location.assign("mailto:rpackit-browser-escape@example.invalid");
+      await new Promise(resolve => setTimeout(resolve, 150));
     } finally {
       await finish();
     }
@@ -2947,7 +3017,7 @@ mod tests {
     #[test]
     fn browser_report_rejects_unknown_fields() {
         let report = serde_json::from_str::<BrowserReport>(
-            r#"{"cssLoaded":false,"scriptLoaded":false,"imageLoaded":false,"fetchGet":false,"fetchPost":false,"streamRead":false,"websocketEcho":false,"proxyCookieVisible":false,"secretShapeVisible":false,"externalRedirectCompleted":false,"childHostRequestCompleted":false,"secret":"bad"}"#,
+            r#"{"cssLoaded":false,"scriptLoaded":false,"imageLoaded":false,"fetchGet":false,"fetchPost":false,"streamRead":false,"websocketEcho":false,"proxyCookieVisible":false,"secretShapeVisible":false,"externalRedirectCompleted":false,"childHostRequestCompleted":false,"navigationEscapeAttempted":false,"popupEscapeAttempted":false,"downloadEscapeAttempted":false,"externalSchemeEscapeAttempted":false,"secret":"bad"}"#,
         );
         assert!(report.is_err());
     }

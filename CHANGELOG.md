@@ -120,6 +120,16 @@ All notable changes to this pre-release repository are documented here.
   subresources, fetches, delayed streaming, WebSocket cookie delivery, child
   hostname isolation, external redirects, process metadata, and clean
   shutdown, including same-data-directory profile recreation.
+- Added an active browser-escape matrix. It attempts external top-level
+  navigation, popup creation, a download, and an external URI scheme; requires
+  the document request to be replaced before network access, popup and
+  download denial, cancellation of every observed external-scheme event, and
+  an empty isolated download directory; and confirms zero escape requests at
+  external collectors. Native evidence reads back disabled devtools, browser
+  accelerators, and default context menus, actively requires a valid unpacked
+  extension install to fail with `ERROR_NOT_SUPPORTED`, rejects WebView2
+  environment and policy-registry overrides before bootstrap, repeats policy
+  checks after creation, and requires no `DevToolsActivePort` in the profile.
 - Recorded a passing development-runtime run on WebView2 `150.0.4078.99`,
   including the clean profile-recreation gate and the three-contender,
   four-path listener-overlap gate. All three wildcard binds succeeded while
@@ -137,8 +147,11 @@ All notable changes to this pre-release repository are documented here.
   32-byte test cap. It also passed the WebSocket rate baseline plus both
   independent directional bounds with 3/3 valid normalized upstream
   handshakes and zero credential leakage; both debug and release runs measured
-  997 ms client-to-upstream and 934 ms upstream-to-client. This is not a
-  fixed-minimum or release-readiness claim.
+  997 ms client-to-upstream and 934 ms upstream-to-client. The same runtime
+  passed the browser-escape matrix with one document network block, one popup
+  denial, one download cancellation, two external-scheme cancellations, an
+  empty download directory, and zero external collector requests. This is not
+  a fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
@@ -146,8 +159,5 @@ All notable changes to this pre-release repository are documented here.
   runtime.
 - Forced-crash profile recreation has not yet proven that `P` is unrecoverable
   from disk.
-- Browser escape controls are configured but have not all been exercised by
-  real negative navigation, popup, download, scheme, devtools, extension, and
-  debugger attempts.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.

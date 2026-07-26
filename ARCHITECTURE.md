@@ -67,8 +67,12 @@ The shell constructs only that first request with WebView2
 [`CreateWebResourceRequest`](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment2)
 and
 [`NavigateWithWebResourceRequest`](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_2).
-No general WebView request interceptor and no credential-bearing JavaScript
-bridge is installed.
+The only `WebResourceRequested` filter is a credential-free top-level
+document escape guard: it permits the exact proxy origin and bundled
+placeholder, and replaces external HTTP or HTTPS documents with a local `403`
+before network access. It does not inject headers or alter subresources. No
+general credential injection or credential-bearing JavaScript bridge is
+installed.
 
 The proxy accepts only the exact bootstrap path and an exact single `B`.
 Authentication uses a constant-time comparison and atomic one-time
@@ -136,6 +140,22 @@ browser extensions, autofill, drag-and-drop, and zoom shortcuts. It reads the
 cookie only to verify flags and value equality in native code; the value is
 never put in the report.
 
+The active browser matrix does not infer these controls from configuration.
+The page attempts an external document, popup, download, and `mailto:` launch;
+native code also queues the external-scheme attempt directly. The document
+request is replaced with a local `403` at `WebResourceRequested`, new windows
+are denied, downloads are cancelled into an isolated directory that must stay
+empty, and every `LaunchingExternalUriScheme` event is cancelled. Native
+readback requires devtools, browser accelerator keys, and default context
+menus to be disabled. A valid unpacked extension must fail installation with
+the Windows `ERROR_NOT_SUPPORTED` result.
+
+Before creation the shell rejects WebView2 environment overrides and checks
+both machine and user policy-registry views, including 32-bit and 64-bit
+views, for application-, executable-, and wildcard-scoped runtime, channel,
+argument, and profile overrides. It repeats the registry check after creation
+and requires the isolated profile to contain no `DevToolsActivePort`.
+
 Normal cleanup deletes `P`, clears browsing data, destroys the WebView, and
 recreates the same profile to test that no cookie is reusable. Forced-crash
 profile recreation is a separate hard gate. The clean same-data-directory
@@ -158,9 +178,10 @@ The WebView-specific invariant comes from
 and Chromium's source-level rule to
 [`Always treat .localhost as loopback`](https://chromium.googlesource.com/chromium/src/+/5d131a1fd9b808c5fd08c45f8299e669b13ec393%5E%21/);
 [WebView2 uses Microsoft Edge with Chromium bits](https://learn.microsoft.com/en-us/microsoft-edge/webview2/).
-The shell rejects environment overrides for the runtime and browser arguments,
-and a system probe that actually observes a non-loopback result aborts before
-creating a WebView or sending `B`.
+The shell rejects environment and policy-registry overrides for the runtime,
+profile, channel, and browser arguments, and a system probe that actually
+observes a non-loopback result aborts before creating a WebView or sending
+`B`.
 
 Because the proxy listens only on loopback, rejects non-loopback peers, and
 requires the exact random `Host`, successful authenticated loading is
@@ -201,7 +222,7 @@ all four traffic paths to pass from their raw counters. The report removes
 result. Unexpected bind errors fail the harness; only Windows `AddrInUse` or
 `PermissionDenied` is recorded as an ordinary rejected contender. This
 resolves that development-runtime gate; it does not imply Phase 1 readiness or
-certify the remaining fixed-runtime and browser matrices.
+certify the remaining fixed-runtime matrix.
 
 ## Malformed upstream response-head evidence
 
@@ -388,8 +409,13 @@ hostnames, booleans, counts, and route names.
 A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
-The remaining matrix includes actual browser escape-path attempts, crash
-profile persistence, and the fixed-minimum runtime.
+The active browser-escape matrix passed on the recorded development runtime:
+one external document was blocked before network, one popup and one download
+were denied, both observed external-scheme events were cancelled, native
+settings and extension rejection were verified, override sources were absent,
+and no `DevToolsActivePort` or external collector request was produced. The
+remaining release gates are crash profile persistence and the fixed-minimum
+runtime.
 Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
 decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream

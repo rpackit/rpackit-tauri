@@ -1,6 +1,11 @@
 //! Secret-free acceptance report schema.
 
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::Path,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 
 use rpackit_transport::HostResolution;
 use rpackit_transport_testkit::{
@@ -33,6 +38,246 @@ pub struct CookieEvidence {
     pub clean_recreation_cookie_absent: bool,
 }
 
+/// Cross-thread counters populated by native `WebView` callbacks.
+#[derive(Debug, Default)]
+pub(crate) struct BrowserEscapeProbe {
+    navigation_block_callbacks: AtomicU32,
+    navigation_network_blocks: AtomicU32,
+    popup_deny_callbacks: AtomicU32,
+    download_cancel_callbacks: AtomicU32,
+    external_scheme_guard_attached: AtomicBool,
+    external_scheme_native_attempt_queued: AtomicBool,
+    external_scheme_events: AtomicU32,
+    expected_external_scheme_events: AtomicU32,
+    external_scheme_cancellations: AtomicU32,
+    native_hardening_finished: AtomicBool,
+    native_hardening_completed: AtomicBool,
+    devtools_disabled: AtomicBool,
+    browser_accelerators_disabled: AtomicBool,
+    default_context_menus_disabled: AtomicBool,
+    extension_install_attempted: AtomicBool,
+    extension_install_completed: AtomicBool,
+    extension_install_rejected_not_supported: AtomicBool,
+}
+
+impl BrowserEscapeProbe {
+    pub(crate) fn record_navigation_block(&self) {
+        self.navigation_block_callbacks
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_navigation_network_block(&self) {
+        self.navigation_network_blocks
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_popup_deny(&self) {
+        self.popup_deny_callbacks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_download_cancel(&self) {
+        self.download_cancel_callbacks
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_external_scheme_guard_attached(&self) {
+        self.external_scheme_guard_attached
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_external_scheme_native_attempt(&self, queued: bool) {
+        self.external_scheme_native_attempt_queued
+            .store(queued, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_external_scheme_event(&self, expected: bool, cancelled: bool) {
+        self.external_scheme_events.fetch_add(1, Ordering::SeqCst);
+        if expected {
+            self.expected_external_scheme_events
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if cancelled {
+            self.external_scheme_cancellations
+                .fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn record_settings(
+        &self,
+        devtools_disabled: bool,
+        browser_accelerators_disabled: bool,
+        default_context_menus_disabled: bool,
+    ) {
+        self.devtools_disabled
+            .store(devtools_disabled, Ordering::SeqCst);
+        self.browser_accelerators_disabled
+            .store(browser_accelerators_disabled, Ordering::SeqCst);
+        self.default_context_menus_disabled
+            .store(default_context_menus_disabled, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_extension_attempt(&self) {
+        self.extension_install_attempted
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_extension_result(&self, rejected_not_supported: bool) {
+        self.extension_install_rejected_not_supported
+            .store(rejected_not_supported, Ordering::SeqCst);
+        self.extension_install_completed
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn record_native_hardening_completed(&self, completed: bool) {
+        self.native_hardening_completed
+            .store(completed, Ordering::SeqCst);
+        self.native_hardening_finished.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn native_hardening_finished(&self) -> bool {
+        self.native_hardening_finished.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn native_hardening_succeeded(&self) -> bool {
+        self.native_hardening_finished() && self.native_hardening_completed.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn runtime_attempts_observed(&self) -> bool {
+        self.native_hardening_completed.load(Ordering::SeqCst)
+            && self.extension_install_completed.load(Ordering::SeqCst)
+            && self.navigation_block_callbacks.load(Ordering::SeqCst) == 1
+            && self.navigation_network_blocks.load(Ordering::SeqCst) == 1
+            && self.popup_deny_callbacks.load(Ordering::SeqCst) == 1
+            && self.download_cancel_callbacks.load(Ordering::SeqCst) == 1
+            && self
+                .external_scheme_native_attempt_queued
+                .load(Ordering::SeqCst)
+            && self.expected_external_scheme_events.load(Ordering::SeqCst) >= 1
+            && self.external_scheme_cancellations.load(Ordering::SeqCst)
+                == self.external_scheme_events.load(Ordering::SeqCst)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub(crate) fn snapshot(
+        &self,
+        probe_completed: bool,
+        environment_overrides_absent: bool,
+        registry_overrides_absent_before_creation: bool,
+        registry_overrides_absent_after_creation: bool,
+        devtools_active_port_absent: bool,
+        download_directory_empty: bool,
+    ) -> BrowserEscapeEvidence {
+        BrowserEscapeEvidence {
+            probe_completed,
+            navigation_block_callbacks: self.navigation_block_callbacks.load(Ordering::SeqCst),
+            navigation_network_blocks: self.navigation_network_blocks.load(Ordering::SeqCst),
+            popup_deny_callbacks: self.popup_deny_callbacks.load(Ordering::SeqCst),
+            download_cancel_callbacks: self.download_cancel_callbacks.load(Ordering::SeqCst),
+            external_scheme_guard_attached: self
+                .external_scheme_guard_attached
+                .load(Ordering::SeqCst),
+            external_scheme_native_attempt_queued: self
+                .external_scheme_native_attempt_queued
+                .load(Ordering::SeqCst),
+            external_scheme_events: self.external_scheme_events.load(Ordering::SeqCst),
+            expected_external_scheme_events: self
+                .expected_external_scheme_events
+                .load(Ordering::SeqCst),
+            external_scheme_cancellations: self
+                .external_scheme_cancellations
+                .load(Ordering::SeqCst),
+            native_hardening_completed: self.native_hardening_completed.load(Ordering::SeqCst),
+            devtools_disabled: self.devtools_disabled.load(Ordering::SeqCst),
+            browser_accelerators_disabled: self
+                .browser_accelerators_disabled
+                .load(Ordering::SeqCst),
+            default_context_menus_disabled: self
+                .default_context_menus_disabled
+                .load(Ordering::SeqCst),
+            extension_install_attempted: self.extension_install_attempted.load(Ordering::SeqCst),
+            extension_install_completed: self.extension_install_completed.load(Ordering::SeqCst),
+            extension_install_rejected_not_supported: self
+                .extension_install_rejected_not_supported
+                .load(Ordering::SeqCst),
+            environment_overrides_absent,
+            registry_overrides_absent_before_creation,
+            registry_overrides_absent_after_creation,
+            devtools_active_port_absent,
+            download_directory_empty,
+        }
+    }
+}
+
+/// Secret-free evidence that browser escape paths were actively attempted and
+/// blocked by the real `WebView2` instance.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BrowserEscapeEvidence {
+    pub probe_completed: bool,
+    pub navigation_block_callbacks: u32,
+    pub navigation_network_blocks: u32,
+    pub popup_deny_callbacks: u32,
+    pub download_cancel_callbacks: u32,
+    pub external_scheme_guard_attached: bool,
+    pub external_scheme_native_attempt_queued: bool,
+    pub external_scheme_events: u32,
+    pub expected_external_scheme_events: u32,
+    pub external_scheme_cancellations: u32,
+    pub native_hardening_completed: bool,
+    pub devtools_disabled: bool,
+    pub browser_accelerators_disabled: bool,
+    pub default_context_menus_disabled: bool,
+    pub extension_install_attempted: bool,
+    pub extension_install_completed: bool,
+    pub extension_install_rejected_not_supported: bool,
+    pub environment_overrides_absent: bool,
+    pub registry_overrides_absent_before_creation: bool,
+    pub registry_overrides_absent_after_creation: bool,
+    pub devtools_active_port_absent: bool,
+    pub download_directory_empty: bool,
+}
+
+impl BrowserEscapeEvidence {
+    fn all_browser_escape_controls_hold(
+        &self,
+        browser: &BrowserReport,
+        upstream: &UpstreamSnapshot,
+        collector: &CollectorSnapshot,
+    ) -> bool {
+        let route = |name: &str| upstream.routes.get(name).copied().unwrap_or(0);
+        self.probe_completed
+            && browser.navigation_escape_attempted
+            && browser.popup_escape_attempted
+            && browser.download_escape_attempted
+            && browser.external_scheme_escape_attempted
+            && self.navigation_block_callbacks == 1
+            && self.navigation_network_blocks == 1
+            && self.popup_deny_callbacks == 1
+            && self.download_cancel_callbacks == 1
+            && self.external_scheme_guard_attached
+            && self.external_scheme_native_attempt_queued
+            && self.external_scheme_events >= 1
+            && self.expected_external_scheme_events == self.external_scheme_events
+            && self.external_scheme_cancellations == self.external_scheme_events
+            && self.native_hardening_completed
+            && self.devtools_disabled
+            && self.browser_accelerators_disabled
+            && self.default_context_menus_disabled
+            && self.extension_install_attempted
+            && self.extension_install_completed
+            && self.extension_install_rejected_not_supported
+            && self.environment_overrides_absent
+            && self.registry_overrides_absent_before_creation
+            && self.registry_overrides_absent_after_creation
+            && self.devtools_active_port_absent
+            && self.download_directory_empty
+            && route("/download/escape") == 1
+            && collector.navigation_escape_requests == 0
+            && collector.popup_escape_requests == 0
+    }
+}
+
 /// Explicit pass/fail evidence for the development runtime.
 ///
 /// Separate booleans preserve one machine-readable result per contract gate.
@@ -47,6 +292,7 @@ pub struct DevelopmentGates {
     pub request_body_resource_limits_fail_closed: bool,
     pub response_resource_limits_fail_closed: bool,
     pub websocket_byte_rates_bounded: bool,
+    pub browser_escape_matrix_pass: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -80,6 +326,7 @@ impl DevelopmentGates {
         request_body_limits: &RequestBodyLimitEvidence,
         response_resource_limits: &ResponseResourceLimitEvidence,
         websocket_rate_limits: &WebSocketRateLimitEvidence,
+        browser_escape: &BrowserEscapeEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -109,6 +356,8 @@ impl DevelopmentGates {
                 .all_response_resource_limits_fail_closed(),
             websocket_byte_rates_bounded: websocket_rate_limits
                 .all_websocket_byte_rates_are_bounded(),
+            browser_escape_matrix_pass: browser_escape
+                .all_browser_escape_controls_hold(browser, upstream, collector),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -169,6 +418,7 @@ impl DevelopmentGates {
             self.request_body_resource_limits_fail_closed,
             self.response_resource_limits_fail_closed,
             self.websocket_byte_rates_bounded,
+            self.browser_escape_matrix_pass,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -209,6 +459,7 @@ pub struct AcceptanceReport {
     pub request_body_limits: RequestBodyLimitEvidence,
     pub response_resource_limits: ResponseResourceLimitEvidence,
     pub websocket_rate_limits: WebSocketRateLimitEvidence,
+    pub browser_escape: BrowserEscapeEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -230,6 +481,7 @@ impl AcceptanceReport {
         request_body_limits: RequestBodyLimitEvidence,
         response_resource_limits: ResponseResourceLimitEvidence,
         websocket_rate_limits: WebSocketRateLimitEvidence,
+        browser_escape: BrowserEscapeEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -246,11 +498,13 @@ impl AcceptanceReport {
                 "crash_profile_persistence",
                 "forced-crash profile recreation is not implemented in this harness revision",
             ),
-            (
-                "browser_escape_matrix",
-                "configured navigation, popup, download, custom-scheme, devtools, extension, and remote-debugging controls are not all exercised end to end",
-            ),
         ]);
+        if !gates.browser_escape_matrix_pass {
+            unproven_release_gates.insert(
+                "browser_escape_matrix",
+                "navigation, popup, download, external-scheme, devtools, extension, and remote-debugging controls have not all passed active real-WebView2 probes",
+            );
+        }
         if !websocket_rate_limits.all_websocket_byte_rates_are_bounded() {
             unproven_release_gates.insert(
                 "resource_and_timeout_matrix",
@@ -281,6 +535,7 @@ impl AcceptanceReport {
             request_body_limits,
             response_resource_limits,
             websocket_rate_limits,
+            browser_escape,
             cookie,
             browser,
             upstream,
@@ -389,6 +644,7 @@ mod tests {
             RequestBodyLimitEvidence::default(),
             ResponseResourceLimitEvidence::default(),
             WebSocketRateLimitEvidence::default(),
+            BrowserEscapeEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -521,6 +777,7 @@ mod tests {
             &RequestBodyLimitEvidence::default(),
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
+            &BrowserEscapeEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -615,6 +872,7 @@ mod tests {
             &RequestBodyLimitEvidence::default(),
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
+            &BrowserEscapeEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -683,6 +941,7 @@ mod tests {
             &evidence,
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
+            &BrowserEscapeEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -704,6 +963,7 @@ mod tests {
             evidence,
             ResponseResourceLimitEvidence::default(),
             WebSocketRateLimitEvidence::default(),
+            BrowserEscapeEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -757,6 +1017,7 @@ mod tests {
             &RequestBodyLimitEvidence::default(),
             &evidence,
             &WebSocketRateLimitEvidence::default(),
+            &BrowserEscapeEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -778,6 +1039,7 @@ mod tests {
             RequestBodyLimitEvidence::default(),
             evidence,
             WebSocketRateLimitEvidence::default(),
+            BrowserEscapeEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -829,6 +1091,7 @@ mod tests {
             &RequestBodyLimitEvidence::default(),
             &ResponseResourceLimitEvidence::default(),
             &evidence,
+            &BrowserEscapeEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -850,6 +1113,7 @@ mod tests {
             RequestBodyLimitEvidence::default(),
             ResponseResourceLimitEvidence::default(),
             evidence,
+            BrowserEscapeEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -867,5 +1131,109 @@ mod tests {
                 .contains_key("resource_and_timeout_matrix")
         );
         assert!(!report.phase1_release_ready);
+    }
+
+    #[test]
+    fn browser_escape_gap_closes_only_with_active_fail_closed_evidence() {
+        let evidence = BrowserEscapeEvidence {
+            probe_completed: true,
+            navigation_block_callbacks: 1,
+            navigation_network_blocks: 1,
+            popup_deny_callbacks: 1,
+            download_cancel_callbacks: 1,
+            external_scheme_guard_attached: true,
+            external_scheme_native_attempt_queued: true,
+            external_scheme_events: 1,
+            expected_external_scheme_events: 1,
+            external_scheme_cancellations: 1,
+            native_hardening_completed: true,
+            devtools_disabled: true,
+            browser_accelerators_disabled: true,
+            default_context_menus_disabled: true,
+            extension_install_attempted: true,
+            extension_install_completed: true,
+            extension_install_rejected_not_supported: true,
+            environment_overrides_absent: true,
+            registry_overrides_absent_before_creation: true,
+            registry_overrides_absent_after_creation: true,
+            devtools_active_port_absent: true,
+            download_directory_empty: true,
+        };
+        let browser = BrowserReport {
+            navigation_escape_attempted: true,
+            popup_escape_attempted: true,
+            download_escape_attempted: true,
+            external_scheme_escape_attempted: true,
+            ..BrowserReport::default()
+        };
+        let upstream = UpstreamSnapshot {
+            routes: BTreeMap::from([("/download/escape".to_owned(), 1)]),
+            ..UpstreamSnapshot::default()
+        };
+        let collector = CollectorSnapshot::default();
+        assert!(evidence.all_browser_escape_controls_hold(&browser, &upstream, &collector));
+
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &MalformedUpstreamEvidence::default(),
+            &MalformedUpstreamBodyEvidence::default(),
+            &RequestBodyLimitEvidence::default(),
+            &ResponseResourceLimitEvidence::default(),
+            &WebSocketRateLimitEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &browser,
+            &upstream,
+            &collector,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.browser_escape_matrix_pass);
+
+        let report = AcceptanceReport::new(
+            None,
+            HostResolution::Unavailable,
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+            RequestBodyLimitEvidence::default(),
+            ResponseResourceLimitEvidence::default(),
+            WebSocketRateLimitEvidence::default(),
+            evidence.clone(),
+            CookieEvidence::default(),
+            browser,
+            upstream,
+            collector,
+            gates,
+        );
+        assert!(
+            !report
+                .unproven_release_gates
+                .contains_key("browser_escape_matrix")
+        );
+        assert!(!report.phase1_release_ready);
+
+        let leaked = CollectorSnapshot {
+            navigation_escape_requests: 1,
+            ..CollectorSnapshot::default()
+        };
+        assert!(!evidence.all_browser_escape_controls_hold(
+            &BrowserReport {
+                navigation_escape_attempted: true,
+                popup_escape_attempted: true,
+                download_escape_attempted: true,
+                external_scheme_escape_attempted: true,
+                ..BrowserReport::default()
+            },
+            &UpstreamSnapshot {
+                routes: BTreeMap::from([("/download/escape".to_owned(), 1)]),
+                ..UpstreamSnapshot::default()
+            },
+            &leaked,
+        ));
     }
 }
