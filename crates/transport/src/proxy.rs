@@ -8,13 +8,11 @@ use std::{
     future::Future,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    pin::Pin,
     str::FromStr,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll},
     time::Duration,
 };
 
@@ -41,7 +39,7 @@ use sha1::{Digest as _, Sha1};
 use socket2::{Domain, Protocol, Socket, Type};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf},
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
     sync::{Semaphore, watch},
     task::JoinHandle,
@@ -59,6 +57,7 @@ use crate::{
     response_body::ResponseBodyGuard,
     response_decode::{decode_body, parse_content_codings},
     response_guard_io::ResponseGuardIo,
+    websocket_io::WebSocketIo,
 };
 
 /// Reserved native proxy-session cookie name.
@@ -1036,8 +1035,17 @@ async fn forward_websocket(
 
     let response = downstream_websocket_response(&websocket, selected_protocol.as_deref())?;
     let idle_timeout = state.limits.websocket_idle_timeout;
+    let max_bytes_per_second = state.limits.max_websocket_bytes_per_second;
+    let burst_window = state.limits.websocket_rate_burst_window;
     if !state.tasks.spawn(async move {
-        let _ = tunnel_upgrades(downstream_upgrade, upstream_upgrade, idle_timeout).await;
+        let _ = tunnel_upgrades(
+            downstream_upgrade,
+            upstream_upgrade,
+            idle_timeout,
+            max_bytes_per_second,
+            burst_window,
+        )
+        .await;
     }) {
         return Err(Box::new(io::Error::other("proxy is shutting down")));
     }
@@ -1204,11 +1212,23 @@ async fn tunnel_upgrades(
     downstream: OnUpgrade,
     upstream: OnUpgrade,
     idle_timeout: Duration,
+    max_bytes_per_second: u64,
+    burst_window: Duration,
 ) -> Result<(), BoxError> {
     let (downstream, upstream) = futures_util::try_join!(downstream, upstream)?;
     let (activity, activity_receiver) = watch::channel(0_u64);
-    let mut downstream = ActivityIo::new(TokioIo::new(downstream), activity.clone());
-    let mut upstream = ActivityIo::new(TokioIo::new(upstream), activity);
+    let mut downstream = WebSocketIo::new(
+        TokioIo::new(downstream),
+        activity.clone(),
+        max_bytes_per_second,
+        burst_window,
+    );
+    let mut upstream = WebSocketIo::new(
+        TokioIo::new(upstream),
+        activity,
+        max_bytes_per_second,
+        burst_window,
+    );
     let mut transfer = Box::pin(tokio::io::copy_bidirectional(
         &mut downstream,
         &mut upstream,
@@ -1224,63 +1244,6 @@ async fn tunnel_upgrades(
     downstream.shutdown().await?;
     upstream.shutdown().await?;
     Ok(())
-}
-
-struct ActivityIo<T> {
-    inner: T,
-    activity: watch::Sender<u64>,
-}
-
-impl<T> ActivityIo<T> {
-    const fn new(inner: T, activity: watch::Sender<u64>) -> Self {
-        Self { inner, activity }
-    }
-
-    fn record_activity(&self) {
-        self.activity
-            .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
-    }
-}
-
-impl<T: AsyncRead + Unpin> AsyncRead for ActivityIo<T> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let filled = buffer.filled().len();
-        let result = Pin::new(&mut this.inner).poll_read(context, buffer);
-        if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > filled {
-            this.record_activity();
-        }
-        result
-    }
-}
-
-impl<T: AsyncWrite + Unpin> AsyncWrite for ActivityIo<T> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
-        let result = Pin::new(&mut this.inner).poll_write(context, buffer);
-        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
-            this.record_activity();
-        }
-        result
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        Pin::new(&mut this.inner).poll_flush(context)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        Pin::new(&mut this.inner).poll_shutdown(context)
-    }
 }
 
 async fn wait_until_idle(mut activity: watch::Receiver<u64>, idle_timeout: Duration) {

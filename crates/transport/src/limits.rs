@@ -57,6 +57,13 @@ pub struct TransportLimits {
     /// Maximum period with no successful read or write on an upgraded
     /// WebSocket tunnel.
     pub websocket_idle_timeout: Duration,
+    /// Maximum raw WebSocket tunnel throughput in each direction.
+    ///
+    /// The ceiling includes WebSocket framing bytes. A zero value disables
+    /// only rate shaping; idle, connection, and task limits still apply.
+    pub max_websocket_bytes_per_second: u64,
+    /// Maximum initial burst duration for each independent WebSocket direction.
+    pub websocket_rate_burst_window: Duration,
 }
 
 impl Default for TransportLimits {
@@ -80,6 +87,8 @@ impl Default for TransportLimits {
             header_timeout: Duration::from_secs(5),
             upstream_timeout: Duration::from_secs(10),
             websocket_idle_timeout: Duration::from_mins(5),
+            max_websocket_bytes_per_second: 8 * 1024 * 1024,
+            websocket_rate_burst_window: Duration::from_secs(1),
         }
     }
 }
@@ -102,6 +111,9 @@ impl TransportLimits {
                 || !self.response_body_rate_window.is_zero())
             && self.max_response_content_encodings <= MAX_RESPONSE_CONTENT_ENCODING_LAYERS
             && !self.websocket_idle_timeout.is_zero()
+            && (self.max_websocket_bytes_per_second == 0
+                || (!self.websocket_rate_burst_window.is_zero()
+                    && self.websocket_rate_burst_window <= self.websocket_idle_timeout))
     }
 }
 
@@ -153,5 +165,28 @@ mod tests {
             ..TransportLimits::default()
         };
         assert!(!excessive.is_valid());
+    }
+
+    #[test]
+    fn enabled_websocket_rate_ceiling_requires_a_nonzero_bounded_burst() {
+        let zero = TransportLimits {
+            websocket_rate_burst_window: Duration::ZERO,
+            ..TransportLimits::default()
+        };
+        assert!(!zero.is_valid());
+
+        let longer_than_idle = TransportLimits {
+            websocket_idle_timeout: Duration::from_secs(1),
+            websocket_rate_burst_window: Duration::from_secs(2),
+            ..TransportLimits::default()
+        };
+        assert!(!longer_than_idle.is_valid());
+
+        let disabled = TransportLimits {
+            max_websocket_bytes_per_second: 0,
+            websocket_rate_burst_window: Duration::ZERO,
+            ..TransportLimits::default()
+        };
+        assert!(disabled.is_valid());
     }
 }

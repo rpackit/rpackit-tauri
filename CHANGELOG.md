@@ -23,6 +23,18 @@ All notable changes to this pre-release repository are documented here.
 - Added tracked shutdown/drain for downstream connections, upstream protocol
   drivers, and upgrade tunnels, plus an activity-based WebSocket idle
   watchdog.
+- Added independent raw-byte token buckets for both WebSocket directions.
+  Defaults allow 8 MiB/s with one second of burst capacity per direction;
+  empty buckets pause reads so the existing bidirectional copy applies
+  backpressure without parsing frames or buffering complete messages. Invalid
+  enabled burst windows are rejected before listeners bind, while a zero
+  ceiling disables only shaping.
+- Added a secret-free real-loopback WebSocket rate matrix with a small valid
+  baseline and separate 100-byte upload and download cases at 100 B/s with a
+  100 ms burst. Both shaped cases must last at least 750 ms and finish within
+  four seconds; all 3 upstream handshakes must carry a valid synthetic
+  credential in normalized form with zero proxy-cookie or bootstrap-header
+  leakage.
 - Added a request-upload body guard with a 64 MiB default cap, 15-second
   non-empty-frame idle timeout, 1 KiB/s floor in complete 5-second windows,
   5-minute total timeout, and fail-closed trailer/parser handling. A real
@@ -118,7 +130,11 @@ All notable changes to this pre-release repository are documented here.
   baselines, all five bounded idle/rate/expansion/malformed/unsupported
   negatives, 7/7 synthetic credentials, and zero credential or marker leaks;
   the 67-to-4,128-byte expansion case forwarded zero decoded bytes across its
-  32-byte test cap. This is not a fixed-minimum or release-readiness claim.
+  32-byte test cap. It also passed the WebSocket rate baseline plus both
+  independent directional bounds with 3/3 valid normalized upstream
+  handshakes and zero credential leakage; both debug and release runs measured
+  997 ms client-to-upstream and 934 ms upstream-to-client. This is not a
+  fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
@@ -129,9 +145,5 @@ All notable changes to this pre-release repository are documented here.
 - Browser escape controls are configured but have not all been exercised by
   real negative navigation, popup, download, scheme, devtools, extension, and
   debugger attempts.
-- WebSocket byte-rate abuse remains unfinished. Authenticated request-upload
-  byte/idle/rate/total/trailer limits, encoded and decoded response-body caps,
-  response idle/rate/content-decoding limits, WebSocket activity-idle
-  shutdown, and malformed response-head/body rejection are tested.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.

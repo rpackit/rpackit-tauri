@@ -15,6 +15,7 @@ mod response_body;
 mod response_decode;
 mod response_guard_io;
 mod secret;
+mod websocket_io;
 #[cfg(windows)]
 mod windows_socket;
 

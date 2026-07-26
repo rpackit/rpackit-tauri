@@ -5,7 +5,7 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -22,7 +22,7 @@ use rpackit_transport_testkit::probe_listener_overlap;
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_malformed_upstream_response_bodies,
     probe_malformed_upstream_response_heads, probe_request_body_limits,
-    probe_response_resource_limits,
+    probe_response_resource_limits, probe_websocket_rate_limits,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -586,6 +586,8 @@ async fn resolver_never_accepts_non_loopback_answers() -> Result<(), TestError> 
 async fn websocket_idle_timeout_resets_after_each_successful_transfer() -> Result<(), TestError> {
     let limits = TransportLimits {
         websocket_idle_timeout: Duration::from_millis(250),
+        max_websocket_bytes_per_second: 0,
+        websocket_rate_burst_window: Duration::ZERO,
         ..TransportLimits::default()
     };
     let fixture = Fixture::start_with_limits(7, limits).await?;
@@ -638,6 +640,90 @@ async fn websocket_idle_timeout_resets_after_each_successful_transfer() -> Resul
     assert_eq!(snapshot.proxy_cookie_leaks, 0);
     assert_eq!(snapshot.bootstrap_header_leaks, 0);
     fixture.shutdown().await
+}
+
+#[tokio::test]
+async fn websocket_byte_rate_ceiling_applies_backpressure_in_both_directions()
+-> Result<(), TestError> {
+    let limits = TransportLimits {
+        websocket_idle_timeout: Duration::from_secs(5),
+        max_websocket_bytes_per_second: 100,
+        websocket_rate_burst_window: Duration::from_millis(100),
+        ..TransportLimits::default()
+    };
+    let fixture = Fixture::start_with_limits(8, limits).await?;
+
+    let physical = format!("ws://127.0.0.1:{}/ws", fixture.proxy.address().port());
+    let mut request = physical.into_client_request()?;
+    request.headers_mut().insert(
+        HOST,
+        HeaderValue::from_str(&fixture.proxy.address().authority())?,
+    );
+    request.headers_mut().insert(
+        ORIGIN,
+        HeaderValue::from_str(&fixture.proxy.address().origin())?,
+    );
+    request
+        .headers_mut()
+        .insert(COOKIE, HeaderValue::from_str(&fixture.cookie_header())?);
+    let (mut websocket, response) = connect_async(request).await?;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    let payload = vec![0x5a; 100];
+    let started = Instant::now();
+    websocket
+        .send(Message::Binary(payload.clone().into()))
+        .await?;
+    let echoed = timeout(Duration::from_secs(4), websocket.next())
+        .await
+        .map_err(|_| io::Error::other("rate-limited WebSocket echo timed out"))?
+        .ok_or_else(|| io::Error::other("rate-limited WebSocket closed before echo"))??;
+    let elapsed = started.elapsed();
+    assert_eq!(echoed, Message::Binary(payload.into()));
+    assert!(
+        elapsed >= Duration::from_millis(1_400),
+        "bidirectional rate ceiling did not apply enough backpressure: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "bidirectional rate ceiling did not make bounded progress: {elapsed:?}"
+    );
+
+    drop(websocket);
+    let snapshot = fixture.upstream.snapshot().await;
+    assert_eq!(snapshot.proxy_cookie_leaks, 0);
+    assert_eq!(snapshot.bootstrap_header_leaks, 0);
+    fixture.shutdown().await
+}
+
+#[tokio::test]
+async fn websocket_rate_probe_proves_independent_directional_bounds() -> Result<(), TestError> {
+    let evidence = probe_websocket_rate_limits().await?;
+
+    assert!(
+        evidence.all_websocket_byte_rates_are_bounded(),
+        "{evidence:#?}"
+    );
+    assert!(evidence.valid_small_baseline_passed, "{evidence:#?}");
+    assert!(evidence.client_to_upstream_rate_bounded, "{evidence:#?}");
+    assert!(evidence.upstream_to_client_rate_bounded, "{evidence:#?}");
+    assert_eq!(evidence.payload_bytes, 100, "{evidence:#?}");
+    assert_eq!(evidence.max_bytes_per_second, 100, "{evidence:#?}");
+    assert_eq!(evidence.burst_window_millis, 100, "{evidence:#?}");
+    assert_eq!(evidence.rate_cases_attempted, 2, "{evidence:#?}");
+    assert_eq!(evidence.bounded_completions, 2, "{evidence:#?}");
+    assert_eq!(
+        evidence.upstream_requests_with_valid_secret, 3,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.normalized_upstream_websocket_requests, 3,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.upstream_requests_with_invalid_secret, 0);
+    assert_eq!(evidence.proxy_cookie_leaks, 0);
+    assert_eq!(evidence.bootstrap_header_leaks, 0);
+    Ok(())
 }
 
 #[tokio::test]

@@ -90,6 +90,12 @@ on WebView2 `150.0.4078.99` established:
   the 67-byte compressed fixture expanded to 4,128 bytes but forwarded zero
   bytes across its 32-byte decoded cap, and all 7 requests carried one valid
   synthetic `S` with zero credential or marker leakage;
+- the WebSocket byte-rate baseline passed, both independent 100-byte
+  directional cases respected a 100 B/s ceiling with a 100 ms burst and
+  bounded completion (997 ms client-to-upstream and 934 ms
+  upstream-to-client), and all 3 upstream handshakes carried one valid
+  synthetic `S` in normalized form with zero proxy-cookie or bootstrap-header
+  leakage;
 - JavaScript observed neither `P` nor a secret-shaped value, the child
   hostname received no proxy cookie, and an external redirect collector
   received no credential;
@@ -258,6 +264,29 @@ bootstrap header, or attacker marker crosses either boundary. The WebView2
 report serializes this evidence as `response_resource_limits` and includes it
 in `development_gates_passed`.
 
+Upgraded WebSocket tunnels keep the five-minute activity-idle watchdog and add
+independent raw-byte token buckets for client-to-upstream and
+upstream-to-client traffic. The default ceiling is 8 MiB/s in each direction
+with one second of burst capacity. WebSocket frame bytes and payload bytes
+consume the same budget. When a bucket is empty, reads pause and
+`copy_bidirectional` applies backpressure; the proxy does not parse frames,
+accumulate an unbounded message, or forward bytes beyond the current
+allowance. A zero ceiling disables only rate shaping. An enabled burst window
+must be nonzero and no longer than the idle timeout or proxy startup fails
+before listeners bind.
+
+The loopback rate matrix proves a small authenticated baseline followed by
+independent upload and download cases. Each case transfers a 100-byte
+application payload under a 100 B/s ceiling and 100 ms burst window, must take
+at least 750 ms, and must finish within four seconds. Passing also requires all
+3 upstream handshakes to carry one valid synthetic `S`, all 3 requests to have
+the normalized WebSocket shape, and zero `P` or `B` leakage. The WebView2
+report serializes this evidence as `websocket_rate_limits`; the
+`websocket_byte_rates_bounded` development gate requires the complete matrix.
+The recorded WebView2 `150.0.4078.99` debug and release runs both passed with
+997 ms client-to-upstream and 934 ms upstream-to-client delivery, 3/3 valid
+normalized upstream handshakes, and zero credential leaks.
+
 The ordinary forwarder captures the request method before sending it upstream.
 Responses to `HEAD` and `304 Not Modified` retain a nonzero hypothetical
 `Content-Length` without treating the absent body as truncation, while their
@@ -300,12 +329,7 @@ Phase 1 release gaps include:
 - forced-crash profile recreation has not proven that `P` is unrecoverable
   from disk after a native-process crash;
 - configured navigation, popup, download, custom-scheme, devtools, extension,
-  and remote-debugging controls have not all been exercised end to end;
-- WebSocket byte-rate abuse remains unfinished; authenticated request-upload
-  byte/idle/minimum-rate/total-time/trailer gates, encoded and decoded
-  response byte limits, response idle/rate/content-decoding gates, WebSocket
-  activity-idle shutdown, and strict malformed response-head/body handling
-  are tested.
+  and remote-debugging controls have not all been exercised end to end.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

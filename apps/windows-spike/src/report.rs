@@ -6,7 +6,7 @@ use rpackit_transport::HostResolution;
 use rpackit_transport_testkit::{
     BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, MalformedUpstreamBodyEvidence,
     MalformedUpstreamEvidence, RequestBodyLimitEvidence, ResponseResourceLimitEvidence,
-    UpstreamSnapshot,
+    UpstreamSnapshot, WebSocketRateLimitEvidence,
 };
 use serde::Serialize;
 
@@ -46,6 +46,7 @@ pub struct DevelopmentGates {
     pub malformed_upstream_response_bodies_fail_closed: bool,
     pub request_body_resource_limits_fail_closed: bool,
     pub response_resource_limits_fail_closed: bool,
+    pub websocket_byte_rates_bounded: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -78,6 +79,7 @@ impl DevelopmentGates {
         malformed_upstream_bodies: &MalformedUpstreamBodyEvidence,
         request_body_limits: &RequestBodyLimitEvidence,
         response_resource_limits: &ResponseResourceLimitEvidence,
+        websocket_rate_limits: &WebSocketRateLimitEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -105,6 +107,8 @@ impl DevelopmentGates {
                 .all_request_body_limits_fail_closed(),
             response_resource_limits_fail_closed: response_resource_limits
                 .all_response_resource_limits_fail_closed(),
+            websocket_byte_rates_bounded: websocket_rate_limits
+                .all_websocket_byte_rates_are_bounded(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -164,6 +168,7 @@ impl DevelopmentGates {
             self.malformed_upstream_response_bodies_fail_closed,
             self.request_body_resource_limits_fail_closed,
             self.response_resource_limits_fail_closed,
+            self.websocket_byte_rates_bounded,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -203,6 +208,7 @@ pub struct AcceptanceReport {
     pub malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
     pub request_body_limits: RequestBodyLimitEvidence,
     pub response_resource_limits: ResponseResourceLimitEvidence,
+    pub websocket_rate_limits: WebSocketRateLimitEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -223,6 +229,7 @@ impl AcceptanceReport {
         malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
         request_body_limits: RequestBodyLimitEvidence,
         response_resource_limits: ResponseResourceLimitEvidence,
+        websocket_rate_limits: WebSocketRateLimitEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -243,11 +250,13 @@ impl AcceptanceReport {
                 "browser_escape_matrix",
                 "configured navigation, popup, download, custom-scheme, devtools, extension, and remote-debugging controls are not all exercised end to end",
             ),
-            (
-                "resource_and_timeout_matrix",
-                "WebSocket byte-rate abuse remains open; request-upload byte/idle/rate/total/trailer limits, response-body encoded/decoded byte, idle/rate/content-decoding limits, and WebSocket activity-idle shutdown are tested",
-            ),
         ]);
+        if !websocket_rate_limits.all_websocket_byte_rates_are_bounded() {
+            unproven_release_gates.insert(
+                "resource_and_timeout_matrix",
+                "WebSocket byte-rate shaping has not proven independent client-to-upstream and upstream-to-client bounds with backpressure",
+            );
+        }
         if !listener_overlap.all_variants_prove_exact_proxy_ownership() {
             unproven_release_gates.insert(
                 "listener_overlap_matrix",
@@ -271,6 +280,7 @@ impl AcceptanceReport {
             malformed_upstream_response_bodies,
             request_body_limits,
             response_resource_limits,
+            websocket_rate_limits,
             cookie,
             browser,
             upstream,
@@ -378,6 +388,7 @@ mod tests {
             malformed_upstream_bodies,
             RequestBodyLimitEvidence::default(),
             ResponseResourceLimitEvidence::default(),
+            WebSocketRateLimitEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -509,6 +520,7 @@ mod tests {
             &MalformedUpstreamBodyEvidence::default(),
             &RequestBodyLimitEvidence::default(),
             &ResponseResourceLimitEvidence::default(),
+            &WebSocketRateLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -602,6 +614,7 @@ mod tests {
             &evidence,
             &RequestBodyLimitEvidence::default(),
             &ResponseResourceLimitEvidence::default(),
+            &WebSocketRateLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -669,6 +682,7 @@ mod tests {
             &MalformedUpstreamBodyEvidence::default(),
             &evidence,
             &ResponseResourceLimitEvidence::default(),
+            &WebSocketRateLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -689,6 +703,7 @@ mod tests {
             MalformedUpstreamBodyEvidence::default(),
             evidence,
             ResponseResourceLimitEvidence::default(),
+            WebSocketRateLimitEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -741,6 +756,7 @@ mod tests {
             &MalformedUpstreamBodyEvidence::default(),
             &RequestBodyLimitEvidence::default(),
             &evidence,
+            &WebSocketRateLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -761,6 +777,7 @@ mod tests {
             MalformedUpstreamBodyEvidence::default(),
             RequestBodyLimitEvidence::default(),
             evidence,
+            WebSocketRateLimitEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -776,6 +793,76 @@ mod tests {
         assert!(!serialized.contains("rpackit-response-resource-marker"));
         assert!(
             report
+                .unproven_release_gates
+                .contains_key("resource_and_timeout_matrix")
+        );
+        assert!(!report.phase1_release_ready);
+    }
+
+    #[test]
+    fn websocket_rate_evidence_closes_the_remaining_resource_gap() {
+        let evidence = WebSocketRateLimitEvidence {
+            valid_small_baseline_passed: true,
+            client_to_upstream_rate_bounded: true,
+            upstream_to_client_rate_bounded: true,
+            payload_bytes: 100,
+            max_bytes_per_second: 100,
+            burst_window_millis: 100,
+            client_to_upstream_elapsed_millis: 900,
+            upstream_to_client_elapsed_millis: 900,
+            rate_cases_attempted: 2,
+            bounded_completions: 2,
+            upstream_requests_with_valid_secret: 3,
+            upstream_requests_with_invalid_secret: 0,
+            normalized_upstream_websocket_requests: 3,
+            proxy_cookie_leaks: 0,
+            bootstrap_header_leaks: 0,
+            probe_completed: true,
+        };
+        assert!(evidence.all_websocket_byte_rates_are_bounded());
+
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &MalformedUpstreamEvidence::default(),
+            &MalformedUpstreamBodyEvidence::default(),
+            &RequestBodyLimitEvidence::default(),
+            &ResponseResourceLimitEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &BrowserReport::default(),
+            &UpstreamSnapshot::default(),
+            &CollectorSnapshot::default(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.websocket_byte_rates_bounded);
+
+        let report = AcceptanceReport::new(
+            None,
+            HostResolution::Unavailable,
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+            RequestBodyLimitEvidence::default(),
+            ResponseResourceLimitEvidence::default(),
+            evidence,
+            CookieEvidence::default(),
+            BrowserReport::default(),
+            UpstreamSnapshot::default(),
+            CollectorSnapshot::default(),
+            gates,
+        );
+        let serialized = serde_json::to_string(&report).unwrap_or_default();
+        assert!(serialized.contains("\"client_to_upstream_rate_bounded\":true"));
+        assert!(serialized.contains("\"upstream_to_client_rate_bounded\":true"));
+        assert!(serialized.contains("\"max_bytes_per_second\":100"));
+        assert!(serialized.contains("\"normalized_upstream_websocket_requests\":3"));
+        assert!(
+            !report
                 .unproven_release_gates
                 .contains_key("resource_and_timeout_matrix")
         );

@@ -5,9 +5,11 @@
 
 mod request_body_probe;
 mod response_resource_probe;
+mod websocket_rate_probe;
 
 pub use request_body_probe::{RequestBodyLimitEvidence, probe_request_body_limits};
 pub use response_resource_probe::{ResponseResourceLimitEvidence, probe_response_resource_limits};
+pub use websocket_rate_probe::{WebSocketRateLimitEvidence, probe_websocket_rate_limits};
 
 use std::{
     collections::BTreeMap,

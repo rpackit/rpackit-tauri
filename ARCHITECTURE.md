@@ -353,6 +353,30 @@ matrix. The recorded WebView2 `150.0.4078.99` run passed both baselines, all
 5/5 bounded negatives, 7/7 synthetic credentials, and zero credential or
 marker leakage; the expansion case forwarded zero decoded bytes.
 
+Each upgraded endpoint is wrapped in a raw-read token bucket before
+`copy_bidirectional`. The downstream wrapper therefore meters
+client-to-upstream bytes, while the upstream wrapper meters
+upstream-to-client bytes; writes are not counted again. The default buckets
+each refill at 8 MiB/s and hold one second of burst capacity. When no whole-byte
+token is available, the read side waits on a monotonic timer, so kernel and
+Tokio backpressure bound queued traffic without parsing WebSocket frames.
+Successful reads and writes still reset the shared five-minute activity-idle
+watchdog. A zero rate disables only the token buckets, and configuration
+validation rejects an enabled zero burst window or one longer than the idle
+deadline before listener creation.
+
+The directional loopback evidence uses a small valid baseline plus separate
+100-byte upload and download payloads at 100 B/s with a 100 ms burst. Both
+shaped cases must last at least 750 ms and complete within four seconds.
+Passing requires 3/3 valid synthetic upstream credentials, 3/3 normalized
+WebSocket requests, and no proxy-cookie or bootstrap-header leakage. The
+WebView2 report records the evidence under `websocket_rate_limits`; its
+`websocket_byte_rates_bounded` gate is part of
+`development_gates_passed`.
+The recorded WebView2 `150.0.4078.99` debug and release runs both measured
+997 ms client-to-upstream and 934 ms upstream-to-client, with all 3 handshakes
+valid and normalized and no credential leakage.
+
 ## Evidence and release boundary
 
 The headless suite proves deterministic negative cases and transport
@@ -364,15 +388,15 @@ hostnames, booleans, counts, and route names.
 A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
-The remaining matrix includes actual browser escape-path attempts, WebSocket
-byte-rate abuse, crash profile persistence, and the fixed-minimum runtime.
+The remaining matrix includes actual browser escape-path attempts, crash
+profile persistence, and the fixed-minimum runtime.
 Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
 decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
-and WebSocket activity-idle shutdown are tested on the development
-environment. Protocol-2 R launcher ownership and Windows Job Objects are
-Phase 2 work.
+WebSocket activity-idle shutdown, and independent bidirectional WebSocket
+byte-rate backpressure are tested on the development environment. Protocol-2 R
+launcher ownership and Windows Job Objects are Phase 2 work.
 
 ## Maintainer rules
 

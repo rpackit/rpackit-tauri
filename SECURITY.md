@@ -36,8 +36,8 @@ violates the security contract.
 The repository is a pre-release Windows transport spike. Passing the current
 development runtime demonstrates useful empirical behavior, but does not prove
 the reviewed fixed minimum WebView2 runtime, forced-crash credential
-persistence, every browser escape path, or the complete resource/timeout
-matrix. Exact-address listener takeover is rejected.
+persistence, or every browser escape path. Exact-address listener takeover is
+rejected.
 The Windows development gate also tests IPv4 wildcard, IPv6 v6-only wildcard,
 and IPv6 dual-stack wildcard overlap. The same dual-stack contender remains
 alive while exact IPv4 and IPv6 are both tested. All four traffic paths must
@@ -94,6 +94,25 @@ and zero proxy-cookie, bootstrap-header, or attacker-marker leakage.
 The recorded WebView2 `150.0.4078.99` run passed the complete matrix and
 forwarded zero decoded bytes from the expansion case.
 
+Raw WebSocket throughput is bounded independently in each direction after a
+validated upgrade. The default token buckets allow 8 MiB/s and one second of
+burst capacity per direction, count framing and payload bytes together, and
+pause reads when empty so `copy_bidirectional` propagates backpressure. The
+proxy neither parses frames nor accumulates unbounded messages. A zero ceiling
+disables only shaping; enabled zero or over-idle burst windows are rejected
+before listener bind. The separate five-minute activity-idle watchdog,
+connection semaphore, and tracked-task shutdown remain enforced.
+
+The WebSocket rate gate proves a small authenticated baseline and separate
+100-byte upload and download cases under a 100 B/s ceiling with a 100 ms burst.
+Each shaped direction must take at least 750 ms and complete within four
+seconds. All three upstream handshakes must carry one valid synthetic secret,
+have the normalized upgrade shape, and leak neither the proxy cookie nor the
+bootstrap header.
+The recorded WebView2 `150.0.4078.99` debug and release runs both passed at
+997 ms client-to-upstream and 934 ms upstream-to-client, with 3/3 valid
+normalized handshakes and zero credential leakage.
+
 The ordinary HTTP body gate separately proves fragmented fixed-length,
 chunked, and close-delimited baselines plus bodyless `HEAD` and `304`
 baselines with nonzero hypothetical lengths, a bodyless `204` baseline without
@@ -122,6 +141,5 @@ enforces this isolation.
 
 The body policy gives all `HEAD`, `204`, `205`, and `304` responses a
 zero-byte streaming allowance. The configured encoded cap is followed by the
-independent decoded cap for transformed streaming responses. WebSocket
-byte-rate limits remain open. Do not describe the transport as Phase 1
-release-ready until every assigned gate passes.
+independent decoded cap for transformed streaming responses. Do not describe
+the transport as Phase 1 release-ready until every assigned gate passes.
