@@ -23,6 +23,11 @@ function Get-RpackitTreeSha256 {
         [string] $Root
     )
 
+    # GitHub-hosted Windows runners can expose TEMP through an 8.3 alias such
+    # as RUNNER~1 while Get-ChildItem expands FullName to the long form. Use
+    # the provider's canonical spelling on both sides before slicing relative
+    # paths so the alias length cannot shift the substring boundary.
+    $Root = (Get-Item -LiteralPath $Root -Force).FullName.TrimEnd("\")
     $relativePaths = [string[]](
         Get-ChildItem -LiteralPath $Root -Recurse -File |
             ForEach-Object {
