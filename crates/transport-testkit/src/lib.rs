@@ -4,8 +4,10 @@
 //! names. Neither native credential is ever serialized or formatted.
 
 mod request_body_probe;
+mod response_resource_probe;
 
 pub use request_body_probe::{RequestBodyLimitEvidence, probe_request_body_limits};
+pub use response_resource_probe::{ResponseResourceLimitEvidence, probe_response_resource_limits};
 
 use std::{
     collections::BTreeMap,

@@ -69,12 +69,30 @@ body parser errors with fixed secret-free errors. The loopback gate requires
 one immediate valid upload to pass; a chunked upload to stop before crossing a
 small test byte cap; idle, below-rate, and over-duration uploads that would
 otherwise complete to terminate boundedly without a success response; and a
-parsed chunked trailer to become a fixed `502`. These
-request-upload results do not close the separate response-body rate,
-decompression-expansion, or WebSocket byte-rate gates. The WebView2 acceptance
-report retains only the six result booleans and secret-free counters; the
-recorded development run passed 5/5 bounded negatives, 5/5 parsed upstream
-credentials, and zero credential leaks.
+parsed chunked trailer to become a fixed `502`. The WebView2 acceptance report
+retains only the six result booleans and secret-free counters; the recorded
+development run passed 5/5 bounded negatives, 5/5 parsed upstream credentials,
+and zero credential leaks.
+
+Upstream response resources are bounded independently. The encoded body and
+final decoded representation each default to 256 MiB. The encoded stream has
+a 15-second non-empty-frame idle deadline and a 1 KiB/s floor in each complete
+5-second window. At most two `gzip`/`x-gzip`, HTTP `deflate` (zlib), `br`, or
+`zstd` layers are decoded with backpressure; unsupported or malformed content
+codings fail closed, and the decoded frame crossing the final cap is never
+forwarded. Encoded partial responses and `Cache-Control: no-transform`
+responses are rejected rather than transformed inconsistently. Range,
+encoding, length, validator, and digest metadata invalidated by decoding is
+removed before downstream release.
+
+The response resource gate proves identity and gzip baselines plus five
+independent idle, below-rate, expansion, malformed-gzip, and unsupported-coding
+negatives. Its 67-byte encoded expansion fixture decodes to 4,128 bytes
+against a 32-byte cap. Passing requires all five negatives to terminate
+boundedly, all seven upstream requests to carry one valid synthetic secret,
+and zero proxy-cookie, bootstrap-header, or attacker-marker leakage.
+The recorded WebView2 `150.0.4078.99` run passed the complete matrix and
+forwarded zero decoded bytes from the expansion case.
 
 The ordinary HTTP body gate separately proves fragmented fixed-length,
 chunked, and close-delimited baselines plus bodyless `HEAD` and `304`
@@ -103,8 +121,7 @@ no-body fixtures omit upstream `Connection: close`, proving that the proxy
 enforces this isolation.
 
 The body policy gives all `HEAD`, `204`, `205`, and `304` responses a
-zero-byte streaming allowance. The configured cap counts the proxied, encoded
-HTTP body; `Content-Encoding` decompression expansion remains part of the open
-response resource-abuse gate, alongside response idle/rate and WebSocket
-byte-rate limits. Do not describe the transport as Phase 1 release-ready until
-every assigned gate passes.
+zero-byte streaming allowance. The configured encoded cap is followed by the
+independent decoded cap for transformed streaming responses. WebSocket
+byte-rate limits remain open. Do not describe the transport as Phase 1
+release-ready until every assigned gate passes.

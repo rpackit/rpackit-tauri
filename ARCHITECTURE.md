@@ -266,9 +266,8 @@ trailer, attacker marker, second response, or reusable connection. The split
 between those two safe outcomes is scheduling-dependent. The close-delimited
 over-limit case is necessarily delimited by that close; its oracle therefore
 requires an empty bounded response body and no marker. The configured byte
-limit applies to the proxied, encoded HTTP body. Expansion after
-`Content-Encoding` decompression is not bounded by this guard and remains part
-of the open resource-abuse gate.
+limit applies to the proxied, encoded HTTP body. The independent decoded
+boundary below limits expansion after `Content-Encoding` transformation.
 
 The forwarder records the request method before the upstream request is moved.
 Its body policy treats `HEAD`, `204`, `205`, and `304` as body-forbidden.
@@ -324,6 +323,36 @@ The byte-cap and trailer errors can be discovered before or after the upstream
 request head is serialized, so between 4 and 6 parsed probe requests are
 valid; the recorded run observed 5/5 correctly authenticated heads.
 
+The response resource guard starts its clocks only when the downstream server
+polls the upstream body. It caps the encoded stream at 256 MiB by default,
+resets a 15-second idle deadline only for non-empty encoded frames, and
+requires 1 KiB/s in every complete 5-second tumbling window. A response that
+ends inside its current rate window passes without padding. The identity path
+uses the smaller of the encoded and decoded caps.
+
+For encoded streaming responses, a maximum of two ordered `gzip`/`x-gzip`,
+HTTP `deflate` (zlib), `br`, or `zstd` layers are decoded in reverse
+application order through bounded readers. The decoded guard independently
+caps the final representation at 256 MiB and never releases a frame that
+crosses that cap. It replaces codec or inner read details with a fixed
+secret-free error. Transformation removes the original content encoding and
+length, range metadata, validators, and integrity digests. Encoded partial
+responses and encoded responses carrying `Cache-Control: no-transform` are
+rejected before downstream head release. Body-forbidden `HEAD` and `304`
+metadata remains descriptive and is not transformed.
+
+The real-loopback matrix proves exact identity and gzip baselines plus five
+independent idle, below-rate, decompression-expansion, malformed-gzip, and
+unsupported-coding failures. The expansion fixture maps 67 encoded bytes to
+4,128 decoded bytes against a 32-byte test cap. Passing requires five bounded
+terminations, 7/7 correctly authenticated upstream requests, and zero
+proxy-cookie, bootstrap-header, or attacker-marker leakage. The real harness
+serializes these results as `response_resource_limits`; the
+`response_resource_limits_fail_closed` development gate requires the complete
+matrix. The recorded WebView2 `150.0.4078.99` run passed both baselines, all
+5/5 bounded negatives, 7/7 synthetic credentials, and zero credential or
+marker leakage; the expansion case forwarded zero decoded bytes.
+
 ## Evidence and release boundary
 
 The headless suite proves deterministic negative cases and transport
@@ -335,10 +364,10 @@ hostnames, booleans, counts, and route names.
 A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
-The remaining matrix includes actual browser escape-path attempts,
-response-body idle/rate and decompression-expansion abuse, WebSocket byte-rate
-abuse, crash profile persistence, and the fixed-minimum runtime.
-Authenticated request-upload byte/idle/rate/total/trailer limits,
+The remaining matrix includes actual browser escape-path attempts, WebSocket
+byte-rate abuse, crash profile persistence, and the fixed-minimum runtime.
+Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
+decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
 and WebSocket activity-idle shutdown are tested on the development

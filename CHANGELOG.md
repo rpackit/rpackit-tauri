@@ -58,8 +58,21 @@ All notable changes to this pre-release repository are documented here.
   Declared trailers and an over-limit `Content-Length` fail before downstream
   head release; errors discovered after streaming begins terminate with
   incomplete framing and a non-reusable downstream connection. The cap
-  measures the proxied, encoded HTTP body; decompression expansion remains an
-  open resource-abuse gate.
+  measures the proxied, encoded HTTP body.
+- Added independent upstream response idle and sustained-rate gates plus a
+  decoded-content boundary. Defaults cap both encoded and decoded bodies at
+  256 MiB, require a non-empty encoded frame within 15 seconds, and require
+  1 KiB/s in each complete 5-second window. At most two ordered
+  `gzip`/`x-gzip`, HTTP `deflate` (zlib), `br`, or `zstd` layers are decoded
+  with backpressure. Unsupported/malformed encodings, encoded partial
+  responses, `no-transform`, and decoded overflow fail closed; invalidated
+  encoding, length, range, validator, and digest metadata is removed.
+- Added secret-free real-loopback response-resource evidence for identity and
+  gzip baselines plus five idle, below-rate, decompression-expansion,
+  malformed-gzip, and unsupported-coding negatives. The expansion fixture is
+  67 encoded bytes and 4,128 decoded bytes against a 32-byte test cap. Passing
+  requires five bounded terminations, 7/7 valid synthetic credentials, and
+  zero proxy-cookie, bootstrap-header, or attacker-marker leakage.
 - Captured the upstream request method in response normalization. `HEAD` and
   `304` now preserve a hypothetical nonzero `Content-Length` without false
   truncation while their guard remains body-forbidden; `204` rejects
@@ -101,7 +114,11 @@ All notable changes to this pre-release repository are documented here.
   upgrades, and zero forwarded attacker markers. It also passed the immediate
   request-upload baseline, all five bounded byte/idle/rate/total/trailer
   negatives, 5/5 parsed synthetic upstream credentials, and zero request-probe
-  credential leaks. This is not a fixed-minimum or release-readiness claim.
+  credential leaks. It also passed the identity and gzip response-resource
+  baselines, all five bounded idle/rate/expansion/malformed/unsupported
+  negatives, 7/7 synthetic credentials, and zero credential or marker leaks;
+  the 67-to-4,128-byte expansion case forwarded zero decoded bytes across its
+  32-byte test cap. This is not a fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
@@ -112,9 +129,9 @@ All notable changes to this pre-release repository are documented here.
 - Browser escape controls are configured but have not all been exercised by
   real negative navigation, popup, download, scheme, devtools, extension, and
   debugger attempts.
-- Response-body idle/rate, decompression expansion, and WebSocket byte-rate
-  abuse remain unfinished. Authenticated request-upload
-  byte/idle/rate/total/trailer limits, WebSocket activity-idle shutdown, and
-  malformed response-head/body rejection are tested.
+- WebSocket byte-rate abuse remains unfinished. Authenticated request-upload
+  byte/idle/rate/total/trailer limits, encoded and decoded response-body caps,
+  response idle/rate/content-decoding limits, WebSocket activity-idle
+  shutdown, and malformed response-head/body rejection are tested.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.

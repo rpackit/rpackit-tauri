@@ -22,6 +22,7 @@ use rpackit_transport_testkit::probe_listener_overlap;
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_malformed_upstream_response_bodies,
     probe_malformed_upstream_response_heads, probe_request_body_limits,
+    probe_response_resource_limits,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -665,6 +666,39 @@ async fn request_body_resource_limits_fail_closed() -> Result<(), TestError> {
     assert_eq!(evidence.bootstrap_header_leaks, 0);
     assert!(
         evidence.all_request_body_limits_fail_closed(),
+        "{evidence:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn response_resource_limits_fail_closed() -> Result<(), TestError> {
+    let evidence = probe_response_resource_limits().await?;
+
+    assert!(evidence.probe_completed, "{evidence:#?}");
+    assert!(evidence.valid_identity_baseline_passed, "{evidence:#?}");
+    assert!(evidence.valid_gzip_baseline_passed, "{evidence:#?}");
+    assert!(
+        evidence.decoded_representation_metadata_stripped,
+        "{evidence:#?}"
+    );
+    assert!(evidence.idle_limit_passed, "{evidence:#?}");
+    assert!(evidence.minimum_rate_limit_passed, "{evidence:#?}");
+    assert!(evidence.decompressed_size_limit_passed, "{evidence:#?}");
+    assert!(evidence.malformed_encoding_passed, "{evidence:#?}");
+    assert!(evidence.unsupported_encoding_passed, "{evidence:#?}");
+    assert_eq!(evidence.cases_attempted, 5, "{evidence:#?}");
+    assert_eq!(evidence.bounded_terminations, 5, "{evidence:#?}");
+    assert_eq!(
+        evidence.upstream_requests_with_valid_secret, 7,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.upstream_requests_with_invalid_secret, 0);
+    assert_eq!(evidence.proxy_cookie_leaks, 0);
+    assert_eq!(evidence.bootstrap_header_leaks, 0);
+    assert_eq!(evidence.attacker_markers_forwarded, 0);
+    assert!(
+        evidence.all_response_resource_limits_fail_closed(),
         "{evidence:#?}"
     );
     Ok(())

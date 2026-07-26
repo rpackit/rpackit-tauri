@@ -22,7 +22,7 @@ use rpackit_transport::{
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_listener_overlap,
     probe_malformed_upstream_response_bodies, probe_malformed_upstream_response_heads,
-    probe_request_body_limits,
+    probe_request_body_limits, probe_response_resource_limits,
 };
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
@@ -111,6 +111,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
     let request_body_limits = probe_request_body_limits().await?;
+    let response_resource_limits = probe_response_resource_limits().await?;
     let secrets = TransportSecrets::generate()?;
     let collector = ExternalCollector::start().await?;
     let upstream = MockUpstream::start(secrets.upstream(), collector.address()).await?;
@@ -178,6 +179,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &malformed_upstream,
         &malformed_upstream_bodies,
         &request_body_limits,
+        &response_resource_limits,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -195,6 +197,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         malformed_upstream,
         malformed_upstream_bodies,
         request_body_limits,
+        response_resource_limits,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

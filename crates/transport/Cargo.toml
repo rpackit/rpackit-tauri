@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-compression.workspace = true
 base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
@@ -24,6 +25,7 @@ socket2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 url.workspace = true
 zeroize.workspace = true
 

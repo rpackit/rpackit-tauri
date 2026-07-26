@@ -23,10 +23,11 @@ use bytes::{Bytes, BytesMut};
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
     header::{
-        CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE,
-        HOST, LOCATION, ORIGIN, REFERRER_POLICY, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_EXTENSIONS,
-        SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, SET_COOKIE,
-        TRANSFER_ENCODING, UPGRADE, X_CONTENT_TYPE_OPTIONS,
+        ACCEPT_RANGES, CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
+        CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG, HOST, LOCATION, ORIGIN,
+        REFERRER_POLICY, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY,
+        SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, SET_COOKIE, TRANSFER_ENCODING, UPGRADE,
+        X_CONTENT_TYPE_OPTIONS,
     },
 };
 use http_body_util::{BodyExt as _, Empty, Full, combinators::UnsyncBoxBody};
@@ -56,6 +57,7 @@ use crate::{
     replay_io::ReplayIo,
     request_body::RequestBodyGuard,
     response_body::ResponseBodyGuard,
+    response_decode::{decode_body, parse_content_codings},
     response_guard_io::ResponseGuardIo,
 };
 
@@ -826,12 +828,25 @@ fn normalize_http_response(
         )));
     }
     let (mut parts, body) = response.into_parts();
+    let content_codings =
+        parse_content_codings(&parts.headers, state.limits.max_response_content_encodings)?;
+    let encoded_body_limit = if content_codings.is_empty() {
+        state
+            .limits
+            .max_response_body_bytes
+            .min(state.limits.max_decoded_response_body_bytes)
+    } else {
+        state.limits.max_response_body_bytes
+    };
     let body_policy = validate_response_body_head(
         request_method,
         parts.status,
         &parts.headers,
-        state.limits.max_response_body_bytes,
+        encoded_body_limit,
     )?;
+    if matches!(body_policy, ResponseBodyPolicy::Streaming { .. }) && !content_codings.is_empty() {
+        validate_decoded_response_transform(parts.status, &parts.headers)?;
+    }
     parts.version = Version::HTTP_11;
     strip_response_headers(&mut parts.headers)?;
     parts
@@ -840,17 +855,34 @@ fn normalize_http_response(
     cookie::normalize_set_cookie_headers(&mut parts.headers, &state.upstream.ip().to_string())?;
     rewrite_location(&mut parts.headers, state)?;
     let body = match body_policy {
-        ResponseBodyPolicy::Streaming { declared_length } => ResponseBodyGuard::streaming(
-            body,
-            declared_length,
-            state.limits.max_response_body_bytes,
-        ),
+        ResponseBodyPolicy::Streaming { declared_length } => {
+            let body = ResponseBodyGuard::streaming(
+                body,
+                declared_length,
+                encoded_body_limit,
+                state.limits.response_body_idle_timeout,
+                state.limits.min_response_body_bytes_per_second,
+                state.limits.response_body_rate_window,
+            );
+            if content_codings.is_empty() {
+                parts.headers.remove(CONTENT_ENCODING);
+                body.map_err(|error| -> BoxError { Box::new(error) })
+                    .boxed_unsync()
+            } else {
+                strip_decoded_representation_headers(&mut parts.headers);
+                decode_body(
+                    body,
+                    &content_codings,
+                    state.limits.max_decoded_response_body_bytes,
+                )
+            }
+        }
         ResponseBodyPolicy::Forbidden { advertised_length } => {
             ResponseBodyGuard::forbidden(body, advertised_length)
+                .map_err(|error| -> BoxError { Box::new(error) })
+                .boxed_unsync()
         }
-    }
-    .map_err(|error| -> BoxError { Box::new(error) })
-    .boxed_unsync();
+    };
     Ok(Response::from_parts(parts, body))
 }
 
@@ -923,6 +955,46 @@ fn validate_response_body_head(
         )));
     }
     Ok(ResponseBodyPolicy::Streaming { declared_length })
+}
+
+fn validate_decoded_response_transform(
+    status: StatusCode,
+    headers: &HeaderMap,
+) -> Result<(), BoxError> {
+    if status == StatusCode::PARTIAL_CONTENT || headers.contains_key(CONTENT_RANGE) {
+        return Err(Box::new(io::Error::other(
+            "encoded partial upstream responses are unsupported",
+        )));
+    }
+    for value in headers.get_all(CACHE_CONTROL) {
+        let value = value
+            .to_str()
+            .map_err(|_| io::Error::other("upstream cache control was invalid"))?;
+        if value
+            .split(',')
+            .any(|directive| directive.trim().eq_ignore_ascii_case("no-transform"))
+        {
+            return Err(Box::new(io::Error::other(
+                "upstream response forbade required content decoding",
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn strip_decoded_representation_headers(headers: &mut HeaderMap) {
+    for name in [
+        CONTENT_ENCODING,
+        CONTENT_LENGTH,
+        ACCEPT_RANGES,
+        CONTENT_RANGE,
+        ETAG,
+    ] {
+        headers.remove(name);
+    }
+    for name in ["content-md5", "digest", "content-digest", "repr-digest"] {
+        headers.remove(name);
+    }
 }
 
 async fn forward_websocket(
@@ -1639,6 +1711,54 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn encoded_transforms_reject_partial_and_no_transform_responses() {
+        let mut partial = HeaderMap::new();
+        partial.insert(CONTENT_RANGE, HeaderValue::from_static("bytes 0-3/100"));
+        assert!(
+            validate_decoded_response_transform(StatusCode::PARTIAL_CONTENT, &partial).is_err()
+        );
+
+        let mut forbidden = HeaderMap::new();
+        forbidden.append(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        forbidden.append(CACHE_CONTROL, HeaderValue::from_static("no-transform"));
+        assert!(validate_decoded_response_transform(StatusCode::OK, &forbidden).is_err());
+        assert!(validate_decoded_response_transform(StatusCode::OK, &HeaderMap::new()).is_ok());
+    }
+
+    #[test]
+    fn decoded_transform_removes_invalidated_representation_metadata() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("content-encoding", "gzip"),
+            ("content-length", "12"),
+            ("accept-ranges", "bytes"),
+            ("content-range", "bytes 0-11/12"),
+            ("etag", "\"encoded\""),
+            ("content-md5", "placeholder"),
+            ("digest", "sha-256=placeholder"),
+            ("content-digest", "sha-256=:placeholder:"),
+            ("repr-digest", "sha-256=:placeholder:"),
+        ] {
+            headers.insert(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+
+        strip_decoded_representation_headers(&mut headers);
+
+        assert_eq!(
+            headers.get(CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/plain"))
+        );
+        assert_eq!(headers.len(), 1);
     }
 
     #[test]

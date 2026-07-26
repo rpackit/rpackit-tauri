@@ -170,7 +170,7 @@ where
     }
 }
 
-fn minimum_bytes_for_window(bytes_per_second: u64, window: Duration) -> u64 {
+pub(crate) fn minimum_bytes_for_window(bytes_per_second: u64, window: Duration) -> u64 {
     const NANOS_PER_SECOND: u128 = 1_000_000_000;
     let numerator = u128::from(bytes_per_second).saturating_mul(window.as_nanos());
     let rounded_up = numerator

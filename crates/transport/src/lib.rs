@@ -12,6 +12,7 @@ mod proxy;
 mod replay_io;
 mod request_body;
 mod response_body;
+mod response_decode;
 mod response_guard_io;
 mod secret;
 #[cfg(windows)]

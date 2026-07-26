@@ -85,6 +85,11 @@ on WebView2 `150.0.4078.99` established:
   negatives terminated boundedly, and all five parsed upstream requests
   carried one valid synthetic `S` with zero proxy-cookie or bootstrap-header
   leaks;
+- the response-resource identity and gzip baselines passed, all five
+  idle/rate/expansion/malformed/unsupported negatives terminated boundedly,
+  the 67-byte compressed fixture expanded to 4,128 bytes but forwarded zero
+  bytes across its 32-byte decoded cap, and all 7 requests carried one valid
+  synthetic `S` with zero credential or marker leakage;
 - JavaScript observed neither `P` nor a secret-shaped value, the child
   hostname received no proxy cookie, and an external redirect collector
   received no credential;
@@ -224,9 +229,34 @@ serialization or end with detectably incomplete framing and
 occurs can depend on whether the downstream server polls the failed body
 before writing its head. The one close-delimited overflow case is cut off with
 an empty body and a non-reusable connection because closing is itself that
-response's delimiter. This byte cap measures the proxied, encoded HTTP body;
-resource abuse through `Content-Encoding` decompression expansion remains an
-open gate.
+response's delimiter. This first byte cap measures the proxied, encoded HTTP
+body. A separate decoded-content boundary prevents a small compressed body
+from expanding past the configured final-representation limit.
+
+Upstream responses also have independent resource clocks and controlled
+content decoding. Defaults cap both the encoded body and final decoded
+representation at 256 MiB, require a non-empty encoded frame within 15
+seconds, and require at least 1 KiB/s in every complete 5-second window.
+Bodies that finish within their current window pass without a minimum-size
+rule, and a zero rate disables only that floor. The proxy supports at most two
+ordered `gzip`/`x-gzip`, HTTP `deflate` (zlib), `br`, or `zstd` layers,
+decodes them in reverse application order with backpressure, and never
+forwards a decoded frame that crosses the final cap. Codec failures are
+replaced by fixed secret-free errors. After transformation it removes
+`Content-Encoding`, `Content-Length`, range metadata, representation
+validators, and digest fields that no longer describe the downstream bytes.
+Encoded partial responses and encoded responses carrying
+`Cache-Control: no-transform` fail before downstream head release.
+
+The real-loopback resource matrix proves an immediate identity baseline and
+an exact gzip-decoding baseline, then independently cuts off idle,
+below-rate, decompression-expansion, malformed-gzip, and unsupported-coding
+cases. Its expansion fixture is 67 encoded bytes and 4,128 decoded bytes
+against a 32-byte test limit. All five negatives terminate boundedly, all
+seven upstream requests carry one valid synthetic `S`, and no proxy cookie,
+bootstrap header, or attacker marker crosses either boundary. The WebView2
+report serializes this evidence as `response_resource_limits` and includes it
+in `development_gates_passed`.
 
 The ordinary forwarder captures the request method before sending it upstream.
 Responses to `HEAD` and `304 Not Modified` retain a nonzero hypothetical
@@ -271,10 +301,11 @@ Phase 1 release gaps include:
   from disk after a native-process crash;
 - configured navigation, popup, download, custom-scheme, devtools, extension,
   and remote-debugging controls have not all been exercised end to end;
-- response-body idle/rate, decompression-expansion, and WebSocket byte-rate
-  abuse gates are not finished; authenticated request-upload byte, idle,
-  minimum-rate, total-time, and trailer gates, WebSocket activity-idle
-  shutdown, and strict malformed response-head/body handling are tested.
+- WebSocket byte-rate abuse remains unfinished; authenticated request-upload
+  byte/idle/minimum-rate/total-time/trailer gates, encoded and decoded
+  response byte limits, response idle/rate/content-decoding gates, WebSocket
+  activity-idle shutdown, and strict malformed response-head/body handling
+  are tested.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R
