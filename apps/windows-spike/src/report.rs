@@ -38,6 +38,45 @@ pub struct CookieEvidence {
     pub clean_recreation_cookie_absent: bool,
 }
 
+/// Secret-free cross-process evidence for the forced-crash profile gate.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CrashProfileEvidence {
+    pub probe_completed: bool,
+    pub producer_paths_scoped_to_system_temp: bool,
+    pub producer_spawned: bool,
+    pub producer_received_no_secret_input: bool,
+    pub producer_cookie_verified_before_crash: bool,
+    pub producer_profile_populated_before_crash: bool,
+    pub producer_forcibly_terminated: bool,
+    pub producer_reaped_after_termination: bool,
+    pub graceful_cleanup_sentinel_absent: bool,
+    pub control_marker_secret_free: bool,
+    pub crashed_profile_recreation_completed: bool,
+    pub crashed_profile_cookie_absent: bool,
+    pub recreation_webview_destroyed: bool,
+    pub crash_profile_directory_removed: bool,
+}
+
+impl CrashProfileEvidence {
+    fn all_forced_crash_controls_hold(&self) -> bool {
+        self.probe_completed
+            && self.producer_paths_scoped_to_system_temp
+            && self.producer_spawned
+            && self.producer_received_no_secret_input
+            && self.producer_cookie_verified_before_crash
+            && self.producer_profile_populated_before_crash
+            && self.producer_forcibly_terminated
+            && self.producer_reaped_after_termination
+            && self.graceful_cleanup_sentinel_absent
+            && self.control_marker_secret_free
+            && self.crashed_profile_recreation_completed
+            && self.crashed_profile_cookie_absent
+            && self.recreation_webview_destroyed
+            && self.crash_profile_directory_removed
+    }
+}
+
 /// Cross-thread counters populated by native `WebView` callbacks.
 #[derive(Debug, Default)]
 pub(crate) struct BrowserEscapeProbe {
@@ -331,6 +370,7 @@ pub struct DevelopmentGates {
     pub response_resource_limits_fail_closed: bool,
     pub websocket_byte_rates_bounded: bool,
     pub browser_escape_matrix_pass: bool,
+    pub crash_profile_persistence_pass: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -365,6 +405,7 @@ impl DevelopmentGates {
         response_resource_limits: &ResponseResourceLimitEvidence,
         websocket_rate_limits: &WebSocketRateLimitEvidence,
         browser_escape: &BrowserEscapeEvidence,
+        crash_profile: &CrashProfileEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -396,6 +437,7 @@ impl DevelopmentGates {
                 .all_websocket_byte_rates_are_bounded(),
             browser_escape_matrix_pass: browser_escape
                 .all_browser_escape_controls_hold(browser, upstream, collector),
+            crash_profile_persistence_pass: crash_profile.all_forced_crash_controls_hold(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -457,6 +499,7 @@ impl DevelopmentGates {
             self.response_resource_limits_fail_closed,
             self.websocket_byte_rates_bounded,
             self.browser_escape_matrix_pass,
+            self.crash_profile_persistence_pass,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -498,6 +541,7 @@ pub struct AcceptanceReport {
     pub response_resource_limits: ResponseResourceLimitEvidence,
     pub websocket_rate_limits: WebSocketRateLimitEvidence,
     pub browser_escape: BrowserEscapeEvidence,
+    pub crash_profile: CrashProfileEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -520,6 +564,7 @@ impl AcceptanceReport {
         response_resource_limits: ResponseResourceLimitEvidence,
         websocket_rate_limits: WebSocketRateLimitEvidence,
         browser_escape: BrowserEscapeEvidence,
+        crash_profile: CrashProfileEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -527,16 +572,16 @@ impl AcceptanceReport {
         gates: DevelopmentGates,
     ) -> Self {
         let development_gates_passed = gates.all_pass();
-        let mut unproven_release_gates = BTreeMap::from([
-            (
-                "fixed_minimum_webview2",
-                "the complete matrix has not run against a reviewed fixed minimum runtime",
-            ),
-            (
+        let mut unproven_release_gates = BTreeMap::from([(
+            "fixed_minimum_webview2",
+            "the complete matrix has not run against a reviewed fixed minimum runtime",
+        )]);
+        if !crash_profile.all_forced_crash_controls_hold() {
+            unproven_release_gates.insert(
                 "crash_profile_persistence",
-                "forced-crash profile recreation is not implemented in this harness revision",
-            ),
-        ]);
+                "a cross-process forced termination has not proven cookie presence before the crash, absence after same-profile recreation, bypass of graceful cleanup, and profile removal",
+            );
+        }
         if !gates.browser_escape_matrix_pass {
             unproven_release_gates.insert(
                 "browser_escape_matrix",
@@ -574,6 +619,7 @@ impl AcceptanceReport {
             response_resource_limits,
             websocket_rate_limits,
             browser_escape,
+            crash_profile,
             cookie,
             browser,
             upstream,
@@ -683,6 +729,7 @@ mod tests {
             ResponseResourceLimitEvidence::default(),
             WebSocketRateLimitEvidence::default(),
             BrowserEscapeEvidence::default(),
+            CrashProfileEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -816,6 +863,7 @@ mod tests {
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
             &BrowserEscapeEvidence::default(),
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -911,6 +959,7 @@ mod tests {
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
             &BrowserEscapeEvidence::default(),
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -980,6 +1029,7 @@ mod tests {
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
             &BrowserEscapeEvidence::default(),
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -1002,6 +1052,7 @@ mod tests {
             ResponseResourceLimitEvidence::default(),
             WebSocketRateLimitEvidence::default(),
             BrowserEscapeEvidence::default(),
+            CrashProfileEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -1056,6 +1107,7 @@ mod tests {
             &evidence,
             &WebSocketRateLimitEvidence::default(),
             &BrowserEscapeEvidence::default(),
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -1078,6 +1130,7 @@ mod tests {
             evidence,
             WebSocketRateLimitEvidence::default(),
             BrowserEscapeEvidence::default(),
+            CrashProfileEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -1130,6 +1183,7 @@ mod tests {
             &ResponseResourceLimitEvidence::default(),
             &evidence,
             &BrowserEscapeEvidence::default(),
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -1152,6 +1206,7 @@ mod tests {
             ResponseResourceLimitEvidence::default(),
             evidence,
             BrowserEscapeEvidence::default(),
+            CrashProfileEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -1168,6 +1223,84 @@ mod tests {
                 .unproven_release_gates
                 .contains_key("resource_and_timeout_matrix")
         );
+        assert!(!report.phase1_release_ready);
+    }
+
+    fn passing_crash_profile_evidence() -> CrashProfileEvidence {
+        CrashProfileEvidence {
+            probe_completed: true,
+            producer_paths_scoped_to_system_temp: true,
+            producer_spawned: true,
+            producer_received_no_secret_input: true,
+            producer_cookie_verified_before_crash: true,
+            producer_profile_populated_before_crash: true,
+            producer_forcibly_terminated: true,
+            producer_reaped_after_termination: true,
+            graceful_cleanup_sentinel_absent: true,
+            control_marker_secret_free: true,
+            crashed_profile_recreation_completed: true,
+            crashed_profile_cookie_absent: true,
+            recreation_webview_destroyed: true,
+            crash_profile_directory_removed: true,
+        }
+    }
+
+    #[test]
+    fn crash_profile_gap_closes_only_with_forced_cross_process_evidence() {
+        let evidence = passing_crash_profile_evidence();
+        assert!(evidence.all_forced_crash_controls_hold());
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &MalformedUpstreamEvidence::default(),
+            &MalformedUpstreamBodyEvidence::default(),
+            &RequestBodyLimitEvidence::default(),
+            &ResponseResourceLimitEvidence::default(),
+            &WebSocketRateLimitEvidence::default(),
+            &BrowserEscapeEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &BrowserReport::default(),
+            &UpstreamSnapshot::default(),
+            &CollectorSnapshot::default(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.crash_profile_persistence_pass);
+
+        let report = AcceptanceReport::new(
+            None,
+            HostResolution::Unavailable,
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+            RequestBodyLimitEvidence::default(),
+            ResponseResourceLimitEvidence::default(),
+            WebSocketRateLimitEvidence::default(),
+            BrowserEscapeEvidence::default(),
+            evidence.clone(),
+            CookieEvidence::default(),
+            BrowserReport::default(),
+            UpstreamSnapshot::default(),
+            CollectorSnapshot::default(),
+            gates,
+        );
+        assert!(
+            !report
+                .unproven_release_gates
+                .contains_key("crash_profile_persistence")
+        );
+        let serialized = serde_json::to_string(&report).unwrap_or_default();
+        assert!(serialized.contains("\"producer_forcibly_terminated\":true"));
+        assert!(serialized.contains("\"crashed_profile_cookie_absent\":true"));
+        assert!(!serialized.contains("rp-"));
+
+        let mut incomplete = evidence;
+        incomplete.graceful_cleanup_sentinel_absent = false;
+        assert!(!incomplete.all_forced_crash_controls_hold());
         assert!(!report.phase1_release_ready);
     }
 
@@ -1229,6 +1362,7 @@ mod tests {
             &ResponseResourceLimitEvidence::default(),
             &WebSocketRateLimitEvidence::default(),
             &evidence,
+            &CrashProfileEvidence::default(),
             &CookieEvidence::default(),
             &browser,
             &upstream,
@@ -1251,6 +1385,7 @@ mod tests {
             ResponseResourceLimitEvidence::default(),
             WebSocketRateLimitEvidence::default(),
             evidence.clone(),
+            CrashProfileEvidence::default(),
             CookieEvidence::default(),
             browser,
             upstream,

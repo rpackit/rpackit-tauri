@@ -120,6 +120,13 @@ All notable changes to this pre-release repository are documented here.
   subresources, fetches, delayed streaming, WebSocket cookie delivery, child
   hostname isolation, external redirects, process metadata, and clean
   shutdown, including same-data-directory profile recreation.
+- Added a cross-process forced-crash profile matrix. A restricted
+  same-executable producer receives no secret input, verifies the exact
+  session cookie in a populated private profile, waits two seconds, and writes
+  only an atomic hostname marker. The parent forcibly terminates it, proves a
+  held graceful-cleanup sentinel never ran, reopens the same profile for the
+  old hostname, requires `P` absent, destroys the recreation WebView, and
+  requires complete profile-directory removal.
 - Added an active browser-escape matrix. It attempts external top-level
   navigation, popup creation, a download, and an external URI scheme; requires
   the document request to be replaced before network access, popup and
@@ -156,14 +163,15 @@ All notable changes to this pre-release repository are documented here.
   passed the browser-escape matrix with one document network block, one popup
   denial, one download cancellation, one cancelled native external-scheme
   event with no canary launch, a removed volatile protocol registration, an
-  empty download directory, and zero external collector requests. This is not
-  a fixed-minimum or release-readiness claim.
+  empty download directory, and zero external collector requests. Its
+  cross-process forced-crash producer also proved cookie presence before
+  termination, absence after same-profile recreation, bypass of graceful
+  cleanup, and complete profile removal with no secret-shaped report content.
+  This is not a fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
 - The full matrix has not run against a reviewed fixed minimum WebView2
   runtime.
-- Forced-crash profile recreation has not yet proven that `P` is unrecoverable
-  from disk.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.

@@ -1,5 +1,6 @@
 //! Real `WebView2` acceptance shell for transport contract version 2.
 
+mod crash_profile;
 #[cfg(windows)]
 mod native_webview;
 mod report;
@@ -79,6 +80,21 @@ const PROFILE_SCAN_ENTRY_LIMIT: usize = 100_000;
 #[derive(Clone, Debug)]
 struct HarnessOptions {
     report_path: PathBuf,
+}
+
+#[derive(Debug)]
+enum HarnessMode {
+    Acceptance(HarnessOptions),
+    CrashProfileProducer(crash_profile::CrashProducerOptions),
+}
+
+impl HarnessMode {
+    fn failure_report_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Acceptance(options) => Some(options.report_path.clone()),
+            Self::CrashProfileProducer(_) => None,
+        }
+    }
 }
 
 struct ExternalSchemeRegistration {
@@ -206,11 +222,11 @@ fn main() {
     if let Some(exit_code) = run_external_scheme_canary_mode() {
         std::process::exit(exit_code);
     }
-    let Ok(options) = parse_options() else {
+    let Ok(mode) = parse_options() else {
         eprintln!("usage: rpackit-windows-spike [--report <path>]");
         std::process::exit(2);
     };
-    let failure_path = options.report_path.clone();
+    let failure_path = mode.failure_report_path();
     let async_failure_path = failure_path.clone();
     let process_exit_code = Arc::new(AtomicI32::new(1));
     let async_exit_code = Arc::clone(&process_exit_code);
@@ -219,10 +235,18 @@ fn main() {
             let handle = app.handle().clone();
             let exit_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                let exit_code = if let Ok(exit_code) = run_harness(handle, options).await {
+                let result = match mode {
+                    HarnessMode::Acceptance(options) => run_harness(handle, options).await,
+                    HarnessMode::CrashProfileProducer(options) => {
+                        crash_profile::run_producer(handle, options).await
+                    }
+                };
+                let exit_code = if let Ok(exit_code) = result {
                     exit_code
                 } else {
-                    let _ = write_failure_report(&async_failure_path);
+                    if let Some(path) = async_failure_path {
+                        let _ = write_failure_report(&path);
+                    }
                     1
                 };
                 async_exit_code.store(exit_code, Ordering::SeqCst);
@@ -232,7 +256,9 @@ fn main() {
         })
         .run(tauri::generate_context!());
     if result.is_err() {
-        let _ = write_failure_report(&failure_path);
+        if let Some(path) = failure_path {
+            let _ = write_failure_report(&path);
+        }
         std::process::exit(1);
     }
     std::process::exit(process_exit_code.load(Ordering::SeqCst));
@@ -257,8 +283,21 @@ fn run_external_scheme_canary_mode() -> Option<i32> {
     ))
 }
 
-fn parse_options() -> Result<HarnessOptions, ()> {
-    let mut arguments = std::env::args_os().skip(1);
+fn parse_options() -> Result<HarnessMode, ()> {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == crash_profile::PRODUCER_ARGUMENT)
+    {
+        return crash_profile::CrashProducerOptions::parse(arguments.into_iter().skip(1))
+            .map(HarnessMode::CrashProfileProducer);
+    }
+    parse_harness_options(arguments.into_iter()).map(HarnessMode::Acceptance)
+}
+
+fn parse_harness_options(
+    mut arguments: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<HarnessOptions, ()> {
     let mut report_path = None;
     while let Some(argument) = arguments.next() {
         if argument == "--report" {
@@ -396,6 +435,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         external_scheme_handler_canary_absent,
         external_scheme_registration_removed,
     );
+    let crash_profile_evidence = crash_profile::probe(&app).await;
     let upstream_snapshot = upstream.snapshot().await;
     let collector_snapshot = collector.snapshot();
     let cookie_evidence = evidence
@@ -437,6 +477,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &response_resource_limits,
         &websocket_rate_limits,
         &browser_escape_evidence,
+        &crash_profile_evidence,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -457,6 +498,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         response_resource_limits,
         websocket_rate_limits,
         browser_escape_evidence,
+        crash_profile_evidence,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

@@ -116,7 +116,13 @@ on WebView2 `150.0.4078.99` established:
 - process arguments and environment were secret-free, and clean shutdown
   removed the session cookie, queued browsing-data cleanup, and destroyed the
   WebView; recreating a WebView with the same data directory after clean
-  shutdown found no reusable `P`.
+  shutdown found no reusable `P`;
+- a separate same-executable producer verified `P` in a populated private
+  profile, settled for two seconds, and was forcibly terminated by its parent.
+  The graceful-cleanup sentinel remained absent; recreating a WebView with the
+  same profile and old hostname found no `P`, destroyed cleanly, and allowed
+  the entire profile directory to be removed. The child received no secret
+  input and its hostname-only control marker contained no secret shape.
 
 The harness exited `0` with `development_gates_passed: true`. This evidence is
 specific to the recorded runtime and machine; a different runtime must produce
@@ -339,12 +345,8 @@ downstream closure rather than inherited upstream advice.
 ## Status
 
 This code is pre-release and `phase1_release_ready` remains false. Known
-Phase 1 release gaps include:
-
-- the complete matrix has not run against a reviewed fixed minimum WebView2
-  runtime;
-- forced-crash profile recreation has not proven that `P` is unrecoverable
-  from disk after a native-process crash.
+Phase 1 release gap: the complete matrix has not run against a reviewed fixed
+minimum WebView2 runtime.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

@@ -163,10 +163,15 @@ argument, and profile overrides. It repeats the registry check after creation
 and requires the isolated profile to contain no `DevToolsActivePort`.
 
 Normal cleanup deletes `P`, clears browsing data, destroys the WebView, and
-recreates the same profile to test that no cookie is reusable. Forced-crash
-profile recreation is a separate hard gate. The clean same-data-directory
-recreation gate passed on the recorded development runtime; the forced-crash
-gate remains unproven.
+recreates the same profile to test that no cookie is reusable. A separate
+cross-process gate starts the same executable in a restricted producer mode
+with no secret input. The producer verifies the exact session cookie inside a
+populated private profile, waits two seconds, and atomically publishes only
+its non-secret random hostname. The parent forcibly terminates the producer
+and requires a held graceful-cleanup sentinel to remain absent. It then
+recreates a WebView with the same profile and old hostname, requires `P` to be
+absent, destroys that WebView, and removes the profile directory. Both clean
+and forced-crash recreation gates passed on the recorded development runtime.
 
 ## Resolver evidence
 
@@ -413,16 +418,15 @@ cleanup, and secret-leakage behavior. Its JSON output contains only versions,
 hostnames, booleans, counts, and route names.
 
 A passing development report is not Phase 1 release readiness. The complete
-matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
-forced native-process crash must prove that the profile cannot recover `P`.
-The active browser-escape matrix passed on the recorded development runtime:
+matrix must still pass on a reviewed fixed minimum WebView2 runtime. The
+active browser-escape matrix passed on the recorded development runtime:
 one external document was blocked before network, one popup and one download
 were denied, the one native external-scheme event was cancelled without
 launching its verified canary handler, and the volatile registration was
 removed. Native settings and extension rejection were verified, override
 sources were absent, and no `DevToolsActivePort` or external collector request
-was produced. The remaining release gates are crash profile persistence and
-the fixed-minimum runtime.
+was produced. The cross-process forced-crash profile matrix also passed; the
+only remaining Phase 1 release gate is the fixed-minimum runtime.
 Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
 decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream

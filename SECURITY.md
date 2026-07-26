@@ -35,14 +35,25 @@ violates the security contract.
 
 The repository is a pre-release Windows transport spike. Passing the current
 development runtime demonstrates useful empirical behavior, but does not prove
-the reviewed fixed minimum WebView2 runtime or forced-crash credential
-persistence. Exact-address listener takeover is rejected.
+the reviewed fixed minimum WebView2 runtime. Exact-address listener takeover
+is rejected.
 The Windows development gate also tests IPv4 wildcard, IPv6 v6-only wildcard,
 and IPv6 dual-stack wildcard overlap. The same dual-stack contender remains
 alive while exact IPv4 and IPv6 are both tested. All four traffic paths must
 return 8/8 proxy `401` responses with zero wildcard accepts. Wildcard bind
 success is recorded but is not itself a failure, while an unexpected bind
 error fails closed.
+
+The forced-crash persistence gate uses a separate same-executable producer
+with no secret-bearing argument, environment addition, or control output. The
+producer verifies `P` and its flags in a populated private profile, waits two
+seconds, then publishes only the validated random hostname. The parent
+forcibly terminates it; an in-process `Drop` sentinel must remain absent,
+proving the normal cleanup path did not run. A new WebView must open the same
+profile, find no cookie named `rpackit_proxy_v1` for the old hostname, destroy
+successfully, and permit the complete profile directory to be removed. The
+recorded WebView2 `150.0.4078.99` run passed every one of these checks with no
+secret shape in its report.
 
 The real-browser escape matrix actively attempts external top-level
 navigation, popup creation, a download, and an external URI scheme. The native
