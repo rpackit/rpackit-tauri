@@ -3,6 +3,10 @@
 //! Observations deliberately retain only booleans, counts, methods, and route
 //! names. Neither native credential is ever serialized or formatted.
 
+mod request_body_probe;
+
+pub use request_body_probe::{RequestBodyLimitEvidence, probe_request_body_limits};
+
 use std::{
     collections::BTreeMap,
     convert::Infallible,
@@ -2675,6 +2679,10 @@ async fn handle_upstream(
         ),
         "/api/data" => response(StatusCode::OK, "{\"ok\":true}", "application/json"),
         "/api/submit" => response(StatusCode::NO_CONTENT, "", "text/plain"),
+        "/api/body-probe" => match request.body_mut().collect().await {
+            Ok(_) => response(StatusCode::NO_CONTENT, "", "text/plain"),
+            Err(_) => response(StatusCode::BAD_REQUEST, "body rejected", "text/plain"),
+        },
         "/api/stream" => stream_response(),
         "/redirect/internal" => redirect_response(&format!("http://{upstream_address}/api/data")),
         "/redirect/external" => redirect_response(&format!("http://{external_collector}/collect")),

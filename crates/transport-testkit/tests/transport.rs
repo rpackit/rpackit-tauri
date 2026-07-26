@@ -21,7 +21,7 @@ use rpackit_transport::{
 use rpackit_transport_testkit::probe_listener_overlap;
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_malformed_upstream_response_bodies,
-    probe_malformed_upstream_response_heads,
+    probe_malformed_upstream_response_heads, probe_request_body_limits,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -637,6 +637,37 @@ async fn websocket_idle_timeout_resets_after_each_successful_transfer() -> Resul
     assert_eq!(snapshot.proxy_cookie_leaks, 0);
     assert_eq!(snapshot.bootstrap_header_leaks, 0);
     fixture.shutdown().await
+}
+
+#[tokio::test]
+async fn request_body_resource_limits_fail_closed() -> Result<(), TestError> {
+    let evidence = probe_request_body_limits().await?;
+
+    assert!(evidence.probe_completed, "{evidence:#?}");
+    assert!(evidence.valid_baseline_passed, "{evidence:#?}");
+    assert!(evidence.byte_limit_passed, "{evidence:#?}");
+    assert!(evidence.idle_limit_passed, "{evidence:#?}");
+    assert!(evidence.minimum_rate_limit_passed, "{evidence:#?}");
+    assert!(evidence.total_timeout_limit_passed, "{evidence:#?}");
+    assert!(evidence.trailer_limit_passed, "{evidence:#?}");
+    assert_eq!(evidence.cases_attempted, 5, "{evidence:#?}");
+    assert_eq!(evidence.bounded_terminations, 5, "{evidence:#?}");
+    assert!(
+        (4..=6).contains(&evidence.upstream_body_probe_requests),
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.upstream_requests_with_valid_secret, evidence.upstream_body_probe_requests,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.upstream_requests_with_invalid_secret, 0);
+    assert_eq!(evidence.proxy_cookie_leaks, 0);
+    assert_eq!(evidence.bootstrap_header_leaks, 0);
+    assert!(
+        evidence.all_request_body_limits_fail_closed(),
+        "{evidence:#?}"
+    );
+    Ok(())
 }
 
 #[tokio::test]

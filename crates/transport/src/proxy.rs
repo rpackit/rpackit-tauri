@@ -29,7 +29,7 @@ use http::{
         TRANSFER_ENCODING, UPGRADE, X_CONTENT_TYPE_OPTIONS,
     },
 };
-use http_body_util::{BodyExt as _, Empty, Full, Limited, combinators::UnsyncBoxBody};
+use http_body_util::{BodyExt as _, Empty, Full, combinators::UnsyncBoxBody};
 use hyper::{
     body::Incoming, client::conn::http1 as client_http1, server::conn::http1 as server_http1,
     service::service_fn, upgrade::OnUpgrade,
@@ -54,6 +54,7 @@ use crate::{
     admission::{self, RawAdmission},
     cookie,
     replay_io::ReplayIo,
+    request_body::RequestBodyGuard,
     response_body::ResponseBodyGuard,
     response_guard_io::ResponseGuardIo,
 };
@@ -202,6 +203,9 @@ impl ProxyConfig {
     }
 
     /// Replace resource and timing limits.
+    ///
+    /// [`RunningProxy::start`] rejects an internally inconsistent limit set
+    /// before binding either listener.
     #[must_use]
     pub fn with_limits(mut self, limits: TransportLimits) -> Self {
         self.limits = limits;
@@ -257,10 +261,14 @@ impl RunningProxy {
     ///
     /// # Errors
     ///
-    /// Returns [`ProxyError::Bind`] if compatible exclusive dual-stack
+    /// Returns [`ProxyError::InvalidConfiguration`] for inconsistent resource
+    /// limits, or [`ProxyError::Bind`] if compatible exclusive dual-stack
     /// loopback listeners cannot be established.
     #[allow(clippy::unused_async)]
     pub async fn start(config: ProxyConfig) -> Result<Self, ProxyError> {
+        if !config.limits.is_valid() {
+            return Err(ProxyError::InvalidConfiguration);
+        }
         let (ipv4, ipv6, port) = bind_dual_loopback().map_err(ProxyError::Bind)?;
         let address = ProxyAddress {
             hostname: Arc::from(config.hostname.as_str()),
@@ -794,7 +802,16 @@ fn normalize_http_request(
             "protected upstream header invariant failed",
         )));
     }
-    let body = Limited::new(body, state.limits.max_request_body_bytes).boxed_unsync();
+    let body = RequestBodyGuard::new(
+        body,
+        state.limits.max_request_body_bytes,
+        state.limits.request_body_idle_timeout,
+        state.limits.request_body_total_timeout,
+        state.limits.min_request_body_bytes_per_second,
+        state.limits.request_body_rate_window,
+    )
+    .map_err(|error| -> BoxError { Box::new(error) })
+    .boxed_unsync();
     Ok(Request::from_parts(parts, body))
 }
 

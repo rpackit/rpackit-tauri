@@ -113,7 +113,8 @@ Before forwarding, the proxy:
 2. fixes the upstream authority and, when present, rewrites `Origin` to that
    fixed upstream;
 3. injects exactly one `Shiny-Shared-Secret: S` as the last protected mutation;
-4. streams bounded bodies with backpressure.
+4. streams request bodies with backpressure through independent byte, idle,
+   minimum-rate, total-time, and trailer gates.
 
 The response path rejects attempts to set the reserved proxy cookie, rewrites
 only redirects that exactly target the fixed upstream, preserves external
@@ -302,6 +303,27 @@ termination, and zero forwarded attacker markers. The response-splitting and
 no-body fixtures omit upstream `Connection: close` where applicable so the
 observed downstream close is enforced by the proxy.
 
+The authenticated request-upload guard starts its clocks only when the
+upstream client begins polling the body. It caps streamed data at 64 MiB by
+default, resets a 15-second idle deadline only after a non-empty data frame,
+requires 1 KiB/s in each completed 5-second tumbling window, and enforces a
+5-minute total duration. A body that ends within its current window passes
+without a minimum-size rule. Any inner-body error or trailer frame is replaced
+with a fixed secret-free error, and a frame that would cross the cap is never
+forwarded. The loopback matrix proves one immediate valid body, one chunked
+body cut off before crossing its byte cap, three otherwise-completing bodies
+cut off independently by idle, rate, and total time, and one parsed chunked
+trailer converted to a fixed `502`.
+Configuration validation rejects a zero enabled rate window or a rate window
+longer than the total body lifetime. The real harness serializes these results
+as `request_body_limits`; the
+`request_body_resource_limits_fail_closed` development gate requires the valid
+baseline, all five bounded negatives, every parsed probe request to carry a
+valid synthetic credential, and zero proxy-cookie or bootstrap-header leaks.
+The byte-cap and trailer errors can be discovered before or after the upstream
+request head is serialized, so between 4 and 6 parsed probe requests are
+valid; the recorded run observed 5/5 correctly authenticated heads.
+
 ## Evidence and release boundary
 
 The headless suite proves deterministic negative cases and transport
@@ -313,13 +335,15 @@ hostnames, booleans, counts, and route names.
 A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
-The remaining matrix includes actual browser escape-path attempts, HTTP
-idle/body-rate and WebSocket byte-rate abuse, crash profile persistence, and
-the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6 wildcard overlap,
-strict malformed upstream response-head rejection, streamed response-body and
-trailer fail-closed behavior, and WebSocket activity-idle shutdown are tested
-on the development environment. Protocol-2 R launcher ownership and Windows
-Job Objects are Phase 2 work.
+The remaining matrix includes actual browser escape-path attempts,
+response-body idle/rate and decompression-expansion abuse, WebSocket byte-rate
+abuse, crash profile persistence, and the fixed-minimum runtime.
+Authenticated request-upload byte/idle/rate/total/trailer limits,
+exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
+response-head rejection, streamed response-body/trailer fail-closed behavior,
+and WebSocket activity-idle shutdown are tested on the development
+environment. Protocol-2 R launcher ownership and Windows Job Objects are
+Phase 2 work.
 
 ## Maintainer rules
 

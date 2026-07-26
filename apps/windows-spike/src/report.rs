@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 use rpackit_transport::HostResolution;
 use rpackit_transport_testkit::{
     BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, MalformedUpstreamBodyEvidence,
-    MalformedUpstreamEvidence, UpstreamSnapshot,
+    MalformedUpstreamEvidence, RequestBodyLimitEvidence, UpstreamSnapshot,
 };
 use serde::Serialize;
 
@@ -43,6 +43,7 @@ pub struct DevelopmentGates {
     pub windows_listener_overlap_all_variants_pass: bool,
     pub malformed_upstream_response_heads_fail_closed: bool,
     pub malformed_upstream_response_bodies_fail_closed: bool,
+    pub request_body_resource_limits_fail_closed: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -73,6 +74,7 @@ impl DevelopmentGates {
         listener_overlap: &ListenerOverlapEvidence,
         malformed_upstream: &MalformedUpstreamEvidence,
         malformed_upstream_bodies: &MalformedUpstreamBodyEvidence,
+        request_body_limits: &RequestBodyLimitEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -96,6 +98,8 @@ impl DevelopmentGates {
                 .all_response_heads_fail_closed(),
             malformed_upstream_response_bodies_fail_closed: malformed_upstream_bodies
                 .all_response_bodies_fail_closed(),
+            request_body_resource_limits_fail_closed: request_body_limits
+                .all_request_body_limits_fail_closed(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -153,6 +157,7 @@ impl DevelopmentGates {
             self.windows_listener_overlap_all_variants_pass,
             self.malformed_upstream_response_heads_fail_closed,
             self.malformed_upstream_response_bodies_fail_closed,
+            self.request_body_resource_limits_fail_closed,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -190,6 +195,7 @@ pub struct AcceptanceReport {
     pub listener_overlap: ListenerOverlapEvidence,
     pub malformed_upstream_response_heads: MalformedUpstreamEvidence,
     pub malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
+    pub request_body_limits: RequestBodyLimitEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -208,6 +214,7 @@ impl AcceptanceReport {
         listener_overlap: ListenerOverlapEvidence,
         malformed_upstream_response_heads: MalformedUpstreamEvidence,
         malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
+        request_body_limits: RequestBodyLimitEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -230,7 +237,7 @@ impl AcceptanceReport {
             ),
             (
                 "resource_and_timeout_matrix",
-                "HTTP idle/body-rate and WebSocket byte-rate abuse gates are not yet complete; WebSocket activity-idle shutdown is tested",
+                "response-body idle/rate, decompression expansion, and WebSocket byte-rate abuse gates are not yet complete; request-upload byte/idle/rate/total/trailer limits and WebSocket activity-idle shutdown are tested",
             ),
         ]);
         if !listener_overlap.all_variants_prove_exact_proxy_ownership() {
@@ -254,6 +261,7 @@ impl AcceptanceReport {
             listener_overlap,
             malformed_upstream_response_heads,
             malformed_upstream_response_bodies,
+            request_body_limits,
             cookie,
             browser,
             upstream,
@@ -359,6 +367,7 @@ mod tests {
             listener_overlap,
             malformed_upstream,
             malformed_upstream_bodies,
+            RequestBodyLimitEvidence::default(),
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -488,6 +497,7 @@ mod tests {
             &ListenerOverlapEvidence::default(),
             &evidence,
             &MalformedUpstreamBodyEvidence::default(),
+            &RequestBodyLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -579,6 +589,7 @@ mod tests {
             &ListenerOverlapEvidence::default(),
             &MalformedUpstreamEvidence::default(),
             &evidence,
+            &RequestBodyLimitEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -615,6 +626,71 @@ mod tests {
             !report
                 .unproven_release_gates
                 .contains_key("malformed_upstream_body_matrix")
+        );
+        assert!(!report.phase1_release_ready);
+    }
+
+    #[test]
+    fn request_body_limit_evidence_is_serialized_without_claiming_readiness() {
+        let evidence = RequestBodyLimitEvidence {
+            valid_baseline_passed: true,
+            byte_limit_passed: true,
+            idle_limit_passed: true,
+            minimum_rate_limit_passed: true,
+            total_timeout_limit_passed: true,
+            trailer_limit_passed: true,
+            cases_attempted: 5,
+            bounded_terminations: 5,
+            upstream_body_probe_requests: 4,
+            upstream_requests_with_valid_secret: 4,
+            upstream_requests_with_invalid_secret: 0,
+            proxy_cookie_leaks: 0,
+            bootstrap_header_leaks: 0,
+            probe_completed: true,
+        };
+        assert!(evidence.all_request_body_limits_fail_closed());
+
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &MalformedUpstreamEvidence::default(),
+            &MalformedUpstreamBodyEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &BrowserReport::default(),
+            &UpstreamSnapshot::default(),
+            &CollectorSnapshot::default(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.request_body_resource_limits_fail_closed);
+
+        let report = AcceptanceReport::new(
+            None,
+            HostResolution::Unavailable,
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+            evidence,
+            CookieEvidence::default(),
+            BrowserReport::default(),
+            UpstreamSnapshot::default(),
+            CollectorSnapshot::default(),
+            gates,
+        );
+        let serialized = serde_json::to_string(&report).unwrap_or_default();
+        assert!(serialized.contains("\"valid_baseline_passed\":true"));
+        assert!(serialized.contains("\"byte_limit_passed\":true"));
+        assert!(serialized.contains("\"minimum_rate_limit_passed\":true"));
+        assert!(serialized.contains("\"trailer_limit_passed\":true"));
+        assert!(serialized.contains("\"upstream_requests_with_valid_secret\":4"));
+        assert!(
+            report
+                .unproven_release_gates
+                .contains_key("resource_and_timeout_matrix")
         );
         assert!(!report.phase1_release_ready);
     }

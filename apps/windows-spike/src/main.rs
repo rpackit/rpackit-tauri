@@ -22,6 +22,7 @@ use rpackit_transport::{
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_listener_overlap,
     probe_malformed_upstream_response_bodies, probe_malformed_upstream_response_heads,
+    probe_request_body_limits,
 };
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
@@ -106,25 +107,18 @@ fn parse_options() -> Result<HarnessOptions, ()> {
 
 async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32, HarnessError> {
     reject_webview_environment_overrides()?;
-    let process_environment_secret_free = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let process_arguments_secret_free = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
+    let request_body_limits = probe_request_body_limits().await?;
     let secrets = TransportSecrets::generate()?;
     let collector = ExternalCollector::start().await?;
     let upstream = MockUpstream::start(secrets.upstream(), collector.address()).await?;
     let config = ProxyConfig::generate_with_secrets(upstream.address(), secrets)?;
     let proxy = RunningProxy::start(config).await?;
 
-    process_environment_secret_free.store(
-        secrets_absent_from_environment(proxy.secrets()),
-        Ordering::Relaxed,
-    );
-    process_arguments_secret_free.store(
-        secrets_absent_from_arguments(proxy.secrets()),
-        Ordering::Relaxed,
-    );
+    let process_environment_secret_free = secrets_absent_from_environment(proxy.secrets());
+    let process_arguments_secret_free = secrets_absent_from_arguments(proxy.secrets());
 
     let listener_overlap = probe_listener_overlap(&proxy).await?;
     let resolution = proxy.resolve_hostname().await;
@@ -183,12 +177,13 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &listener_overlap,
         &malformed_upstream,
         &malformed_upstream_bodies,
+        &request_body_limits,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
         &collector_snapshot,
-        process_environment_secret_free.load(Ordering::Relaxed),
-        process_arguments_secret_free.load(Ordering::Relaxed),
+        process_environment_secret_free,
+        process_arguments_secret_free,
         cleanup_cookie_absent,
         cleanup_browsing_data_queued,
         window_destroyed,
@@ -199,6 +194,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         listener_overlap,
         malformed_upstream,
         malformed_upstream_bodies,
+        request_body_limits,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

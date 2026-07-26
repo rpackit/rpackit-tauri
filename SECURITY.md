@@ -60,6 +60,22 @@ the downstream connection must not upgrade, and no attacker header canary or
 WebSocket frame may pass. The oracle rejects unexpected response headers as
 well as body bytes. All 34 upstream requests must have one valid synthetic
 secret and all 17 WebSocket requests must have the normalized upgrade shape.
+
+Authenticated request uploads are bounded independently before reaching the
+fixed upstream. The default guard combines a 64 MiB cap, a 15-second
+non-empty-frame idle deadline, a 1 KiB/s floor in each complete 5-second
+window, and a 5-minute total lifetime. It rejects request trailers and replaces
+body parser errors with fixed secret-free errors. The loopback gate requires
+one immediate valid upload to pass; a chunked upload to stop before crossing a
+small test byte cap; idle, below-rate, and over-duration uploads that would
+otherwise complete to terminate boundedly without a success response; and a
+parsed chunked trailer to become a fixed `502`. These
+request-upload results do not close the separate response-body rate,
+decompression-expansion, or WebSocket byte-rate gates. The WebView2 acceptance
+report retains only the six result booleans and secret-free counters; the
+recorded development run passed 5/5 bounded negatives, 5/5 parsed upstream
+credentials, and zero credential leaks.
+
 The ordinary HTTP body gate separately proves fragmented fixed-length,
 chunked, and close-delimited baselines plus bodyless `HEAD` and `304`
 baselines with nonzero hypothetical lengths, a bodyless `204` baseline without
@@ -89,5 +105,6 @@ enforces this isolation.
 The body policy gives all `HEAD`, `204`, `205`, and `304` responses a
 zero-byte streaming allowance. The configured cap counts the proxied, encoded
 HTTP body; `Content-Encoding` decompression expansion remains part of the open
-resource-abuse gate, alongside idle and rate limits. Do not describe the
-transport as Phase 1 release-ready until every assigned gate passes.
+response resource-abuse gate, alongside response idle/rate and WebSocket
+byte-rate limits. Do not describe the transport as Phase 1 release-ready until
+every assigned gate passes.

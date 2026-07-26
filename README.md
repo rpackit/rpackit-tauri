@@ -81,6 +81,10 @@ on WebView2 `150.0.4078.99` established:
 - every observed upstream request carried exactly one valid `S`, while `P`,
   `B`, forwarding headers, and WebSocket extension offers did not reach the
   upstream;
+- the request-upload baseline passed, all five byte/idle/rate/total/trailer
+  negatives terminated boundedly, and all five parsed upstream requests
+  carried one valid synthetic `S` with zero proxy-cookie or bootstrap-header
+  leaks;
 - JavaScript observed neither `P` nor a secret-shaped value, the child
   hostname received no proxy cookie, and an external redirect collector
   received no credential;
@@ -164,6 +168,21 @@ accept zero connections. Bind outcomes and counts are recorded without
 credentials. On the recorded development run all three wildcard binds
 succeeded, all 32 exact-loopback requests returned `401`, and wildcard accepts
 remained zero.
+
+Authenticated request uploads have their own fail-closed streaming guard after
+proxy authentication and before the fixed upstream. Defaults allow at most
+64 MiB, require each non-empty data frame to arrive within 15 seconds, require
+at least 1 KiB/s in every complete 5-second window, and stop one body after
+5 minutes. Bodies that finish before a rate window ends are not padded to a
+minimum size. Request trailers, parser failures, byte-limit overflow, idle
+uploads, below-rate uploads, and over-duration uploads terminate the upstream
+request with a fixed secret-free internal error. A zero rate explicitly
+disables only the rate floor; invalid enabled rate windows are rejected at
+proxy startup. The loopback suite proves an immediate bounded upload and
+separate streamed byte-cap, idle, below-rate, total-time, and trailer
+negatives. The real WebView2 harness serializes the same secret-free evidence
+and includes it in
+`development_gates_passed`.
 
 Malformed upstream response heads are a separate fail-closed development
 gate. Before Hyper receives any upstream response byte, the proxy requires
@@ -252,9 +271,10 @@ Phase 1 release gaps include:
   from disk after a native-process crash;
 - configured navigation, popup, download, custom-scheme, devtools, extension,
   and remote-debugging controls have not all been exercised end to end;
-- HTTP idle/body-rate and WebSocket byte-rate abuse gates are not finished;
-  WebSocket activity-idle shutdown plus strict malformed response-head and
-  streamed body/trailer handling are tested.
+- response-body idle/rate, decompression-expansion, and WebSocket byte-rate
+  abuse gates are not finished; authenticated request-upload byte, idle,
+  minimum-rate, total-time, and trailer gates, WebSocket activity-idle
+  shutdown, and strict malformed response-head/body handling are tested.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

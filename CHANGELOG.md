@@ -23,6 +23,12 @@ All notable changes to this pre-release repository are documented here.
 - Added tracked shutdown/drain for downstream connections, upstream protocol
   drivers, and upgrade tunnels, plus an activity-based WebSocket idle
   watchdog.
+- Added a request-upload body guard with a 64 MiB default cap, 15-second
+  non-empty-frame idle timeout, 1 KiB/s floor in complete 5-second windows,
+  5-minute total timeout, and fail-closed trailer/parser handling. A real
+  loopback matrix proves one immediate valid upload plus independent streamed
+  byte-cap, idle, below-rate, over-duration, and parsed-trailer terminations.
+  Invalid enabled rate windows are rejected before proxy listeners bind.
 - Added secret-free Windows overlap evidence for IPv4 wildcard, IPv6 v6-only
   wildcard, and IPv6 dual-stack wildcard contenders. The dual-stack contender
   remains alive across exact IPv4 and IPv6 probes. Each of the four traffic
@@ -92,8 +98,10 @@ All notable changes to this pre-release repository are documented here.
   remained zero. The same run passed both raw response baselines, all 16 HTTP
   and 16 WebSocket negative heads, 34 valid synthetic upstream credentials,
   17 normalized WebSocket upgrade requests, zero unexpected downstream
-  upgrades, and zero forwarded attacker markers. This is not a fixed-minimum
-  or release-readiness claim.
+  upgrades, and zero forwarded attacker markers. It also passed the immediate
+  request-upload baseline, all five bounded byte/idle/rate/total/trailer
+  negatives, 5/5 parsed synthetic upstream credentials, and zero request-probe
+  credential leaks. This is not a fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
@@ -104,8 +112,9 @@ All notable changes to this pre-release repository are documented here.
 - Browser escape controls are configured but have not all been exercised by
   real negative navigation, popup, download, scheme, devtools, extension, and
   debugger attempts.
-- HTTP idle/body-rate and WebSocket byte-rate abuse remain unfinished.
-  WebSocket activity-idle shutdown and both malformed response-head and
-  streamed response-body/trailer rejection are tested.
+- Response-body idle/rate, decompression expansion, and WebSocket byte-rate
+  abuse remain unfinished. Authenticated request-upload
+  byte/idle/rate/total/trailer limits, WebSocket activity-idle shutdown, and
+  malformed response-head/body rejection are tested.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.
