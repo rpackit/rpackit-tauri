@@ -3,9 +3,10 @@
 Maintained native Tauri templates and the security-critical loopback transport
 for [rpackit](https://github.com/rpackit/rpackit).
 
-The repository currently contains the completed Windows **Phase 1 transport
-spike**. It is an executable acceptance harness, not a supported application
-generator or installer. The authoritative contract is
+The repository contains the completed Windows **Phase 1 transport spike** and
+the first fail-closed **Phase 2 process-owner foundation**. It remains an
+executable acceptance harness, not a supported application generator or
+installer. The authoritative contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md);
 this implementation follows transport contract version 2.
 
@@ -134,8 +135,8 @@ that exact version, verified the committed manifest and expanded runtime tree,
 contained no secret shape, had no unproven release gates, and recorded
 `phase1_release_ready: true`. The Debug WebSocket rate cases measured 1,007 ms
 client-to-upstream and 934 ms upstream-to-client; Release measured 1,006 ms
-and 921 ms. This closes the Phase 1 fixed-minimum gate; it does not implement
-the Phase 2 R launcher lifecycle.
+and 921 ms. This closes the Phase 1 fixed-minimum gate; it does not close the
+full Phase 2 R launcher lifecycle.
 
 On this Windows installation, the system/Tokio DNS probe returned
 `unavailable` for the random `.localhost` subdomain. That is not treated as
@@ -160,6 +161,37 @@ peer and incorrect `Host`. This is runtime evidence that the recorded WebView2
 reached the loopback-only endpoint; it is not a claim that the separate
 system/Tokio resolver supports arbitrary `.localhost` subdomains. There is no
 stable-host fallback.
+
+## Phase 2 process-owner foundation
+
+`crates/windows-launcher` now owns the small audited unsafe boundary needed to
+start a bundled Windows process tree. It:
+
+- requires explicit absolute executable and working-directory paths and calls
+  `CreateProcessW` with the executable in `lpApplicationName`, without a
+  command shell;
+- creates the wrapper suspended and supplies an explicit inherited-handle
+  allowlist containing only closed stdin plus stdout/stderr lifecycle pipes;
+- creates an unnamed, non-inheritable Job Object, enables
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, reads the policy back, and rejects
+  either breakaway flag;
+- assigns the still-suspended wrapper to the Job, records PID plus process
+  creation time, verifies membership through the exact process handle, and
+  resumes only after every gate succeeds; and
+- terminates the suspended child before execution if Job assignment fails,
+  while closing the owned Job kills the complete remaining process tree.
+
+Windows tests prove argument preservation through paths and values containing
+spaces, quotes, and trailing backslashes; exact Job-policy readback; failed
+assignment before execution; rejection of an attempted breakaway child;
+exclusion of an unrelated inheritable handle; and removal of both a wrapper
+and its descendant when the Job closes.
+
+This is deliberately not a full Phase 2 claim. Bundle/manifest validation,
+private session-directory DACLs, one-time `S` token-file handling, protocol-2
+NDJSON readiness, create-time-aware runtime-PID and listener ownership,
+graceful control-file shutdown, and integration with `hello-shiny` remain
+required before Phase 2 can be marked complete.
 
 ## Development
 
@@ -379,7 +411,8 @@ Version Runtime `149.0.4022.98` both passed the complete matrix in Debug and
 Release. The fixed reports have `development_gates_passed: true`,
 `phase1_release_ready: true`, and an empty `unproven_release_gates` object.
 
-Protocol-2 R launcher ownership and Windows Job Objects belong to Phase 2;
+Phase 2 now has a verified Windows Job/process-creation foundation, but the
+protocol-2 R readiness and complete shutdown lifecycle remain in progress;
 resource generation and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

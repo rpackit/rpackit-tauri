@@ -2580,6 +2580,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpackit-windows-launcher"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.19",
+ "windows",
+]
+
+[[package]]
 name = "rpackit-windows-spike"
 version = "0.1.0"
 dependencies = [

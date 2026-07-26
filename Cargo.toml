@@ -3,6 +3,7 @@ members = [
   "apps/windows-spike",
   "crates/transport",
   "crates/transport-testkit",
+  "crates/windows-launcher",
 ]
 default-members = [
   "crates/transport",

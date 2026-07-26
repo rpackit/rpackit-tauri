@@ -39,7 +39,14 @@ reviewed x64 Fixed Version Runtime `149.0.4022.98`, in Debug and Release.
 The fixed reports contain no unproven release gate and record
 `phase1_release_ready: true`. This assurance does not cover the Phase 2 R
 launcher lifecycle, a generated application, an installer, or code signing.
-Exact-address listener takeover is rejected.
+Exact-address listener takeover is rejected. The initial Phase 2 native
+process-owner layer is implemented and tested separately: it creates the
+wrapper suspended, allowlists only lifecycle-pipe handles, assigns it to an
+unnamed non-inheritable kill-on-close Job with both breakaway policies
+disabled, verifies PID/creation-time identity and Job membership, and resumes
+only after those gates pass. This evidence does not yet cover protocol-2
+readiness, the real R runtime PID/listener, private credential files, or
+graceful close.
 
 The newest WebView2 API used by the harness has a historical compatibility
 floor of `120.0.2210.55`, but that obsolete runtime is neither publicly

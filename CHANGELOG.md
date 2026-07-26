@@ -4,6 +4,24 @@ All notable changes to this pre-release repository are documented here.
 
 ## Unreleased
 
+### Phase 2 lifecycle foundation
+
+- Added an isolated Windows native-launch crate that supplies an explicit
+  executable path to `CreateProcessW`, quotes arguments without a shell,
+  allowlists only stdin/stdout/stderr lifecycle pipes, and creates the wrapper
+  with `CREATE_SUSPENDED`.
+- Added an unnamed, non-inheritable Job Object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, exact policy readback, no breakaway
+  flags, suspended assignment, process creation-time identity, membership
+  verification, and resume only after all gates pass.
+- Added fail-before-execution cleanup for failed Job assignment plus native
+  lifecycle tests for quoting, policy and identity, attempted breakaway,
+  unrelated inheritable-handle exclusion, and kill-on-close removal of a
+  wrapper and descendant.
+- Kept the Phase 2 boundary explicit: bundle validation, private DACL/token
+  files, protocol-2 readiness, runtime PID/listener identity, graceful close,
+  and real `hello-shiny` integration remain in progress.
+
 ### Transport contract version 2
 
 - Added three independent per-launch secrets: upstream authentication (`S`),

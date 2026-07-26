@@ -3,14 +3,15 @@
 ## Scope and authority
 
 This repository implements the completed Windows Phase 1 spike for rpackit's
-authenticated native loopback transport. The authoritative security contract
-is
+authenticated native loopback transport and the initial Phase 2 native
+process-owner boundary. The authoritative security contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md).
 This document describes the implementation of transport contract version 2;
 it does not expand or weaken that contract.
 
 The spike is an acceptance harness. It is not yet an application generator,
-supported installer, or implementation of protocol-2 R process ownership.
+supported installer, or complete implementation of protocol-2 R process
+ownership and readiness.
 
 ## Components
 
@@ -18,9 +19,45 @@ supported installer, or implementation of protocol-2 R process ownership.
 | --- | --- | --- |
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
 | `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
+| `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process identity, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol parsing, listener ownership, browser lifecycle |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
+
+## Windows process ownership foundation
+
+The Phase 2 native boundary calls `CreateProcessW` with an explicit absolute
+application path, a separately quoted mutable command line, and
+`CREATE_SUSPENDED`. It does not request `CREATE_BREAKAWAY_FROM_JOB`. A
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` admits only three standard-I/O handles:
+closed stdin and the stdout/stderr lifecycle pipes. An otherwise inheritable
+sentinel handle is excluded by an acceptance test.
+
+Before process creation, the launcher creates an unnamed Job Object with
+default non-inheritable security attributes. It sets and then reads back
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; either `BREAKAWAY_OK` policy is a hard
+failure. The still-suspended wrapper is assigned to that Job and queried
+through its exact process handle. Native state records both PID and Windows
+creation time. Only an observed member with the expected one-count suspension
+is resumed.
+
+If assignment fails, `TerminateProcess` runs while the primary thread is still
+suspended and a bounded wait follows. Any later pre-resume failure terminates
+the assigned Job. The owning Rust value retains both Job and wrapper handles;
+closing the last Job handle kills remaining members. Tests prove an attempted
+breakaway receives `ERROR_ACCESS_DENIED` and that closing the Job removes both
+a fixture wrapper and its spawned descendant.
+
+This layer intentionally has no secret-bearing inputs. The parent's
+environment is inherited, so callers must never place `S`, `P`, or `B` there.
+The later lifecycle owner will pass only a private token-file path—not `S`
+itself—in the R launcher arguments.
+
+The remaining Phase 2 layers validate schema-1/protocol-2 resources, create
+the private per-launch DACL and credential/control files, parse the prefixed
+NDJSON event stream, open and compare the runtime PID by creation time,
+validate Job/listener ownership, authenticate readiness, and perform bounded
+graceful shutdown before forced Job termination.
 
 ## Secret and origin model
 
@@ -473,8 +510,10 @@ decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
 WebSocket activity-idle shutdown, and independent bidirectional WebSocket
-byte-rate backpressure are tested on both runtime modes. Protocol-2 R launcher
-ownership and Windows Job Objects are Phase 2 work.
+byte-rate backpressure are tested on both runtime modes. The Phase 2 Windows
+Job/process-creation foundation has its own passing native tests; protocol-2 R
+readiness, real-runtime/listener identity, graceful close, and credential-file
+cleanup are not yet complete.
 
 ## Maintainer rules
 
