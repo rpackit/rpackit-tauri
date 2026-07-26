@@ -10,7 +10,8 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
+use std::net::Ipv4Addr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Path, PathBuf};
@@ -18,9 +19,14 @@ use std::time::Duration;
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
-    FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_INSUFFICIENT_BUFFER, FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+    HANDLE_FLAGS, NO_ERROR, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows::Win32::NetworkManagement::IpHelper::{
+    GetExtendedTcpTable, MIB_TCP_STATE_LISTEN, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+};
+use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -150,6 +156,17 @@ impl JobMemberProcess {
     }
 }
 
+/// Exact loopback listener identity verified from Windows' owner-PID tables.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListenerIdentity {
+    /// Create-time-aware process identity held by [`JobMemberProcess`].
+    pub process: ProcessIdentity,
+    /// Required upstream address.
+    pub address: Ipv4Addr,
+    /// Required upstream port.
+    pub port: u16,
+}
+
 impl JobProcess {
     /// Returns the PID and creation timestamp of the exact wrapper process.
     #[must_use]
@@ -243,6 +260,75 @@ impl JobProcess {
         }
 
         Ok(JobMemberProcess { process, identity })
+    }
+
+    /// Verifies one exact `127.0.0.1` TCP listener owned by a captured member.
+    ///
+    /// The selected port must have exactly one IPv4 listener row, with the
+    /// captured process PID and exact loopback address, and no IPv6 listener
+    /// row. The member is checked for Job membership and liveness both around
+    /// the owner-table snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for port zero, an exited or outside-Job member,
+    /// malformed/unavailable Windows owner tables, a missing exact listener,
+    /// or any competing listener on the selected port.
+    pub fn verify_ipv4_listener(
+        &self,
+        member: &JobMemberProcess,
+        port: u16,
+    ) -> Result<ListenerIdentity, LaunchError> {
+        if port == 0 {
+            return Err(LaunchError::InvalidListenerPort);
+        }
+        if !process_is_alive(&member.process)? {
+            return Err(LaunchError::ProcessAlreadyExited);
+        }
+        if !process_is_in_job(&member.process, &self.job)? {
+            return Err(LaunchError::ProcessOutsideJob);
+        }
+
+        let ipv4 = ipv4_listener_rows()?;
+        let ipv6 = ipv6_listener_rows()?;
+        let pid = member.identity.pid;
+        let mut exact = 0_usize;
+        let mut ipv4_on_port = 0_usize;
+        for row in ipv4 {
+            if network_port(row.dwLocalPort) != port {
+                continue;
+            }
+            ipv4_on_port += 1;
+            if row.dwLocalAddr.to_ne_bytes() == Ipv4Addr::LOCALHOST.octets()
+                && row.dwOwningPid == pid
+                && row.dwState == MIB_TCP_STATE_LISTEN.0.cast_unsigned()
+            {
+                exact += 1;
+            }
+        }
+        let ipv6_on_port = ipv6
+            .iter()
+            .filter(|row| network_port(row.dwLocalPort) == port)
+            .count();
+
+        if ipv4_on_port != exact || exact > 1 || ipv6_on_port != 0 {
+            return Err(LaunchError::ConflictingListener);
+        }
+        if exact == 0 {
+            return Err(LaunchError::ExpectedListenerNotFound);
+        }
+        if !process_is_in_job(&member.process, &self.job)? {
+            return Err(LaunchError::ProcessOutsideJob);
+        }
+        if !process_is_alive(&member.process)? {
+            return Err(LaunchError::ProcessAlreadyExited);
+        }
+
+        Ok(ListenerIdentity {
+            process: member.identity,
+            address: Ipv4Addr::LOCALHOST,
+            port,
+        })
     }
 
     /// Takes the read side of the child's standard-output lifecycle pipe.
@@ -643,6 +729,100 @@ fn process_is_in_job(process: &OwnedHandle, job: &OwnedHandle) -> Result<bool, L
     Ok(result.as_bool())
 }
 
+fn ipv4_listener_rows() -> Result<Vec<MIB_TCPROW_OWNER_PID>, LaunchError> {
+    let table = tcp_listener_table(u32::from(AF_INET.0))?;
+    read_table_rows::<MIB_TCPROW_OWNER_PID>(&table, offset_of!(MIB_TCPTABLE_OWNER_PID, table))
+}
+
+fn ipv6_listener_rows() -> Result<Vec<MIB_TCP6ROW_OWNER_PID>, LaunchError> {
+    let table = tcp_listener_table(u32::from(AF_INET6.0))?;
+    read_table_rows::<MIB_TCP6ROW_OWNER_PID>(&table, offset_of!(MIB_TCP6TABLE_OWNER_PID, table))
+}
+
+fn tcp_listener_table(address_family: u32) -> Result<Vec<usize>, LaunchError> {
+    let mut required_bytes = 0_u32;
+    // SAFETY: The null first call is the documented size query and writes only
+    // `required_bytes`.
+    let initial_status = unsafe {
+        GetExtendedTcpTable(
+            None,
+            &raw mut required_bytes,
+            false,
+            address_family,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        )
+    };
+    if initial_status != ERROR_INSUFFICIENT_BUFFER.0 && initial_status != NO_ERROR.0 {
+        return Err(LaunchError::TcpTableQueryFailed(initial_status));
+    }
+
+    for _ in 0..4 {
+        let requested = usize::try_from(required_bytes)
+            .map_err(|_| LaunchError::MalformedTcpTable)?
+            .max(size_of::<u32>());
+        let words = requested.div_ceil(size_of::<usize>());
+        let mut storage = vec![0_usize; words];
+        let mut supplied_bytes = u32::try_from(std::mem::size_of_val(storage.as_slice()))
+            .map_err(|_| LaunchError::MalformedTcpTable)?;
+        // SAFETY: `storage` is aligned and writable for `supplied_bytes`.
+        // Windows writes one owner-PID listener table or reports the new size.
+        let status = unsafe {
+            GetExtendedTcpTable(
+                Some(storage.as_mut_ptr().cast()),
+                &raw mut supplied_bytes,
+                false,
+                address_family,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if status == NO_ERROR.0 {
+            return Ok(storage);
+        }
+        if status != ERROR_INSUFFICIENT_BUFFER.0 {
+            return Err(LaunchError::TcpTableQueryFailed(status));
+        }
+        required_bytes = supplied_bytes;
+    }
+    Err(LaunchError::TcpTableChangedRepeatedly)
+}
+
+fn read_table_rows<T: Copy>(storage: &[usize], rows_offset: usize) -> Result<Vec<T>, LaunchError> {
+    let available = std::mem::size_of_val(storage);
+    if available < size_of::<u32>() || size_of::<T>() == 0 || rows_offset > available {
+        return Err(LaunchError::MalformedTcpTable);
+    }
+    let base = storage.as_ptr().cast::<u8>();
+    // SAFETY: The validated storage contains at least one u32. Unaligned read
+    // avoids relying on a particular table-header packing choice.
+    let count_u32 = unsafe { base.cast::<u32>().read_unaligned() };
+    let count = usize::try_from(count_u32).map_err(|_| LaunchError::MalformedTcpTable)?;
+    let rows_bytes = count
+        .checked_mul(size_of::<T>())
+        .ok_or(LaunchError::MalformedTcpTable)?;
+    let end = rows_offset
+        .checked_add(rows_bytes)
+        .ok_or(LaunchError::MalformedTcpTable)?;
+    if end > available {
+        return Err(LaunchError::MalformedTcpTable);
+    }
+
+    let mut rows = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = rows_offset + index * size_of::<T>();
+        // SAFETY: The complete row range was bounds-checked above. Rows are
+        // plain Copy Win32 table records; unaligned reads tolerate SDK padding.
+        rows.push(unsafe { base.add(offset).cast::<T>().read_unaligned() });
+    }
+    Ok(rows)
+}
+
+fn network_port(value: u32) -> u16 {
+    let bytes = value.to_ne_bytes();
+    u16::from_be_bytes([bytes[0], bytes[1]])
+}
+
 fn process_is_alive(process: &OwnedHandle) -> Result<bool, LaunchError> {
     // SAFETY: The process handle is owned and valid for the zero-duration
     // observation.
@@ -821,6 +1001,24 @@ pub enum LaunchError {
     /// The reported process did not belong to this launch's Job.
     #[error("the reported process was outside the owned Job")]
     ProcessOutsideJob,
+    /// A selected listener port cannot be zero.
+    #[error("the expected listener port was zero")]
+    InvalidListenerPort,
+    /// Windows could not return one owner-PID TCP listener table.
+    #[error("GetExtendedTcpTable failed with Win32 status {0}")]
+    TcpTableQueryFailed(u32),
+    /// The TCP listener table changed through every bounded sizing retry.
+    #[error("the TCP listener table changed during every bounded query")]
+    TcpTableChangedRepeatedly,
+    /// A Windows owner-PID TCP table did not fit its reported buffer.
+    #[error("the TCP listener table had an invalid layout")]
+    MalformedTcpTable,
+    /// No exact loopback listener was owned by the captured runtime.
+    #[error("the expected runtime loopback listener was not found")]
+    ExpectedListenerNotFound,
+    /// Another IPv4 or IPv6 listener shared the selected upstream port.
+    #[error("a conflicting listener shared the expected runtime port")]
+    ConflictingListener,
     /// The Job handle unexpectedly allowed inheritance.
     #[error("the Job handle is inheritable")]
     InheritableJobHandle,

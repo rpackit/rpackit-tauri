@@ -101,6 +101,46 @@ fn unrelated_inheritable_handle_is_not_inherited() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn exact_job_member_owns_the_ipv4_listener() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempdir()?;
+    let outcome_path = temporary.path().join("listener outcome.txt");
+    let stop_path = temporary.path().join("stop listener");
+    let command = LaunchCommand::new(FIXTURE, temporary.path()).args([
+        OsString::from("listen"),
+        outcome_path.as_os_str().to_owned(),
+        stop_path.as_os_str().to_owned(),
+    ]);
+    let process = launch(&command)?;
+    let values = wait_for_pids(&outcome_path, Duration::from_secs(10))?;
+    let runtime_pid = values[0];
+    let port = u16::try_from(values[1])?;
+    let member = process.capture_job_member(runtime_pid)?;
+
+    assert!(matches!(
+        process.verify_ipv4_listener(&member, 0),
+        Err(LaunchError::InvalidListenerPort)
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let listener = loop {
+        match process.verify_ipv4_listener(&member, port) {
+            Ok(listener) => break listener,
+            Err(LaunchError::ExpectedListenerNotFound) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(Box::new(error)),
+        }
+    };
+    assert_eq!(listener.process, member.identity());
+    assert_eq!(listener.address, std::net::Ipv4Addr::LOCALHOST);
+    assert_eq!(listener.port, port);
+
+    std::fs::write(stop_path, b"stop")?;
+    assert_eq!(process.wait(Duration::from_secs(10))?, Some(0));
+    assert_eq!(member.wait(Duration::from_secs(10))?, Some(0));
+    Ok(())
+}
+
+#[test]
 fn dropping_job_kills_wrapper_and_descendant() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempdir()?;
     let pid_path = temporary.path().join("process ids.txt");

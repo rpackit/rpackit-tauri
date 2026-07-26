@@ -48,9 +48,11 @@ only after those gates pass. A separate safe decoder bounds protocol-2 stdout,
 rejects ambiguous or weakened event objects, and enforces a terminal lifecycle
 sequence with stable PID and port. The process layer can retain a
 non-inheritable PID-plus-creation-time handle only after confirming the live
-process belongs to the owned Job. This evidence does not yet cover connecting
-the decoder and PID capture to a real R launch, authenticated readiness,
-listener ownership, private credential files, or graceful close.
+process belongs to the owned Job. Windows owner-PID tables must then show one
+exact IPv4-loopback listener for that PID and no same-port IPv4/IPv6
+competitor, with liveness and Job membership checked around the snapshot.
+This evidence does not yet cover connecting those layers to a real R launch,
+authenticated readiness, private credential files, or graceful close.
 
 The newest WebView2 API used by the harness has a historical compatibility
 floor of `120.0.2210.55`, but that obsolete runtime is neither publicly

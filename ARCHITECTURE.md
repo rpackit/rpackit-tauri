@@ -50,6 +50,15 @@ liveness again before returning. Keeping this handle fixes the observed
 identity across later numeric PID reuse; listener ownership must still be
 proved against that same captured process.
 
+The owner then queries the Windows
+[`GetExtendedTcpTable`](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable)
+owner-PID listener views for both `AF_INET` and `AF_INET6`. The selected port
+must contain exactly one IPv4 row: `127.0.0.1`, `LISTEN`, and the captured PID.
+Any other IPv4 row, any IPv6 row, a missing exact row, process exit, or lost
+Job membership fails closed. The variable-length native tables are
+size-bounded, layout-checked, and retrieved with a bounded retry if they grow
+between the sizing and data calls.
+
 If assignment fails, `TerminateProcess` runs while the primary thread is still
 suspended and a bounded wait follows. Any later pre-resume failure terminates
 the assigned Job. The owning Rust value retains both Job and wrapper handles;
@@ -68,8 +77,9 @@ port, and stable runtime PID. The remaining Phase 2 layers validate
 schema-1/protocol-2 resources, create the private per-launch DACL and
 credential/control files, drive that decoder from the real pipe, open and
 retain the reported runtime identity through the existing capture API,
-validate listener ownership, authenticate readiness, and perform bounded
-graceful shutdown before forced Job termination.
+apply the existing listener-owner verifier to the real R socket, authenticate
+readiness, and perform bounded graceful shutdown before forced Job
+termination.
 
 ## Secret and origin model
 

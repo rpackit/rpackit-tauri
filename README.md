@@ -180,7 +180,10 @@ start a bundled Windows process tree. It:
   resumes only after every gate succeeds;
 - can open a separately reported positive runtime PID with a non-inheritable,
   create-time-aware process handle, rejecting an exited process or any process
-  outside this launch's Job; and
+  outside this launch's Job;
+- reads Windows' IPv4 and IPv6 owner-PID listener tables and accepts only one
+  exact `127.0.0.1:<port>` row owned by that captured live Job member, with no
+  competing listener on the selected port; and
 - terminates the suspended child before execution if Job assignment fails,
   while closing the owned Job kills the complete remaining process tree.
 
@@ -190,7 +193,9 @@ assignment before execution; rejection of an attempted breakaway child;
 exclusion of an unrelated inheritable handle; and removal of both a wrapper
 and its descendant when the Job closes. The same tree test captures exact
 handles for both processes, rejects the test runner as an outside-Job PID, and
-observes both captured identities terminate after Job close.
+observes both captured identities terminate after Job close. A real
+IPv4-loopback listener test independently matches its Windows owner-PID table
+row to the captured identity.
 
 `crates/launcher-protocol` provides the safe protocol-2 boundary shared by
 later lifecycle owners. Its streaming decoder bounds every stdout line,
@@ -206,9 +211,9 @@ collapsed.
 This is deliberately not a full Phase 2 claim. Bundle/manifest validation,
 private session-directory DACLs, one-time `S` token-file handling, wiring the
 decoder and reported PID capture to the real R lifecycle pipes, listener
-ownership, authenticated readiness, graceful control-file shutdown, and
-integration with `hello-shiny` remain required before Phase 2 can be marked
-complete.
+ownership verification to the real R process, authenticated readiness,
+graceful control-file shutdown, and integration with `hello-shiny` remain
+required before Phase 2 can be marked complete.
 
 ## Development
 

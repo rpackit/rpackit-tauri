@@ -4,6 +4,7 @@
 
 use std::env;
 use std::fs;
+use std::net::TcpListener;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -57,6 +58,17 @@ fn main() -> ExitCode {
             };
             run_handle_probe(&handle_value.to_string_lossy(), Path::new(&outcome_path))
         }
+        "listen" => {
+            let Some(outcome_path) = arguments.next() else {
+                eprintln!("missing listener outcome path");
+                return ExitCode::from(2);
+            };
+            let Some(stop_path) = arguments.next() else {
+                eprintln!("missing listener stop path");
+                return ExitCode::from(2);
+            };
+            run_listener(Path::new(&outcome_path), Path::new(&stop_path))
+        }
         "sleep" => loop {
             thread::sleep(Duration::from_secs(1));
         },
@@ -65,6 +77,33 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn run_listener(outcome_path: &Path, stop_path: &Path) -> ExitCode {
+    let listener = match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("listener bind failed: {error}");
+            return ExitCode::from(12);
+        }
+    };
+    let port = match listener.local_addr() {
+        Ok(address) => address.port(),
+        Err(error) => {
+            eprintln!("listener address failed: {error}");
+            return ExitCode::from(13);
+        }
+    };
+    let payload = format!("{}\n{port}\n", std::process::id());
+    if let Err(error) = fs::write(outcome_path, payload) {
+        eprintln!("listener outcome write failed: {error}");
+        return ExitCode::from(14);
+    }
+    while !stop_path.exists() {
+        thread::sleep(Duration::from_millis(25));
+    }
+    drop(listener);
+    ExitCode::SUCCESS
 }
 
 fn run_handle_probe(handle_value: &str, outcome_path: &Path) -> ExitCode {

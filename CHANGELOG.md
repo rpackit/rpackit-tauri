@@ -17,6 +17,9 @@ All notable changes to this pre-release repository are documented here.
 - Added live Job-member capture for a protocol-reported runtime PID. The
   non-inheritable handle records creation time, rejects zero/exited/outside-Job
   processes, and remains tied to the exact identity across later PID reuse.
+- Added bounded IPv4/IPv6 Windows owner-PID table inspection. Listener
+  verification requires one exact `127.0.0.1:<port>` row owned by the captured
+  live Job member and rejects every missing or competing same-port row.
 - Added fail-before-execution cleanup for failed Job assignment plus native
   lifecycle tests for quoting, policy and identity, attempted breakaway,
   unrelated inheritable-handle exclusion, and kill-on-close removal of a
