@@ -23,6 +23,12 @@ All notable changes to this pre-release repository are documented here.
 - Added tracked shutdown/drain for downstream connections, upstream protocol
   drivers, and upgrade tunnels, plus an activity-based WebSocket idle
   watchdog.
+- Refreshed the compatible Futures and Hyper stack together and validated the
+  combined lockfile through the real WebView2 gate. `webview2-com` remains on
+  `0.38.2` until Tauri/wry migrate their Windows COM type graph from 0.61 to
+  0.62.
+- Updated pinned GitHub Actions to their Node 24 releases and bounded CI job
+  durations.
 - Added deterministic mock-upstream tests for bootstrap replay, malformed
   requests, Origin checks, redirects/cookies, WebSocket behavior,
   cross-instance isolation, hostname classification, and credential leakage.
