@@ -29,7 +29,9 @@ use http_body_util::{BodyExt as _, Full, StreamBody, combinators::UnsyncBoxBody}
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
 use hyper_util::rt::TokioIo;
-use rpackit_transport::{ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, Secret, TransportSecrets};
+use rpackit_transport::{
+    ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, Secret, TransportLimits, TransportSecrets,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -91,6 +93,32 @@ const MALFORMED_HTTP_RESPONSE_CASES: usize = MALFORMED_RESPONSE_CASE_NAMES.len()
 const MALFORMED_WEBSOCKET_RESPONSE_CASES: usize = MALFORMED_WEBSOCKET_RESPONSE_CASE_NAMES.len();
 const MALFORMED_RESPONSE_CASES: usize =
     MALFORMED_HTTP_RESPONSE_CASES + MALFORMED_WEBSOCKET_RESPONSE_CASES;
+const MALFORMED_RESPONSE_BODY_CASE_NAMES: [&str; 23] = [
+    "declared_length_over_limit",
+    "declared_trailer",
+    "no_content_content_length",
+    "no_content_transfer_encoding",
+    "reset_content_nonzero_length",
+    "reset_content_transfer_encoding",
+    "truncated_content_length_empty",
+    "truncated_content_length_partial",
+    "invalid_chunk_size",
+    "overflowing_chunk_size",
+    "truncated_chunk_data",
+    "missing_chunk_data_crlf",
+    "missing_terminal_chunk",
+    "malformed_trailer",
+    "protected_trailer",
+    "oversized_trailer",
+    "too_many_trailers",
+    "chunked_body_over_limit",
+    "close_delimited_body_over_limit",
+    "no_content_malicious_body",
+    "reset_content_close_delimited_body",
+    "bytes_after_terminal_chunk",
+    "bytes_after_content_length",
+];
+const MALFORMED_RESPONSE_BODY_CASES: usize = MALFORMED_RESPONSE_BODY_CASE_NAMES.len();
 const MALFORMED_RESPONSE_MARKER: &[u8] = b"rpackit-malformed-upstream-marker";
 const MALFORMED_RESPONSE_MARKER_TEXT: &str = "rpackit-malformed-upstream-marker";
 const WEBSOCKET_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -348,6 +376,263 @@ impl MalformedUpstreamEvidence {
     }
 }
 
+/// Secret-free evidence for malformed, truncated, and unsafe upstream bodies.
+///
+/// Cases detected before downstream response-head release must become the
+/// exact fixed `502`. Errors discovered while a body is already streaming
+/// must close before downstream head serialization or with incomplete
+/// downstream framing and `Connection: close`, except that a close-delimited
+/// limit cutoff is necessarily complete at the close delimiter. Bytes after a
+/// complete upstream message must remain isolated from the one downstream
+/// response.
+#[derive(Clone, Debug, Default, Serialize, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MalformedUpstreamBodyEvidence {
+    /// Whether a fragmented fixed-length baseline arrived exactly.
+    pub valid_content_length_baseline_passed: bool,
+    /// Whether a fragmented chunked baseline arrived exactly.
+    pub valid_chunked_baseline_passed: bool,
+    /// Whether a close-delimited baseline arrived exactly.
+    pub valid_close_delimited_baseline_passed: bool,
+    /// Whether a HEAD response preserved hypothetical length without content.
+    pub valid_head_nonzero_length_baseline_passed: bool,
+    /// Whether a 304 preserved hypothetical length without content.
+    pub valid_not_modified_nonzero_length_baseline_passed: bool,
+    /// Whether a 204 without framing remained bodyless.
+    pub valid_no_content_baseline_passed: bool,
+    /// Whether a 205 with `Content-Length: 0` remained bodyless.
+    pub valid_reset_content_zero_length_baseline_passed: bool,
+    /// Number of named negative cases attempted.
+    pub cases_attempted: u32,
+    /// Cases rejected with the exact fixed `502` before body streaming.
+    pub exact_bad_gateway_responses: u32,
+    /// Streaming failures closed before a head or with incomplete framing.
+    pub stream_fail_closed_terminations: u32,
+    /// Close-delimited over-limit bodies cut off without forwarding content.
+    pub close_delimited_limit_terminations: u32,
+    /// Body-forbidden status responses that exposed no malicious content.
+    pub bodyless_status_terminations: u32,
+    /// Response-splitting attempts isolated to the first complete response.
+    pub isolated_complete_responses: u32,
+    /// Negative cases that terminated before the bounded client timeout.
+    pub bounded_terminations: u32,
+    /// Upstream requests carrying exactly one valid synthetic credential.
+    pub upstream_requests_with_valid_secret: u32,
+    /// Keep-alive clients that attempted a second authenticated request.
+    pub second_downstream_requests_attempted: u32,
+    /// Body-probe sockets physically closed before proxy shutdown.
+    pub downstream_connections_physically_closed: u32,
+    /// Body-probe sockets that received a second HTTP response.
+    pub second_downstream_responses: u32,
+    /// Negative responses in which an attacker marker reached downstream.
+    pub attacker_markers_forwarded: u32,
+    /// Negative responses lacking header close, physical close, or isolation.
+    pub reusable_downstream_responses: u32,
+    /// Per-case fail-closed observations keyed by a non-secret case name.
+    pub cases: BTreeMap<String, bool>,
+    /// Whether every raw upstream task and proxy shutdown completed.
+    pub probe_completed: bool,
+}
+
+impl MalformedUpstreamBodyEvidence {
+    /// Return true only when all baselines, counters, and named cases prove the
+    /// body and trailer boundary.
+    #[must_use]
+    pub fn all_response_bodies_fail_closed(&self) -> bool {
+        self.probe_completed
+            && self.valid_content_length_baseline_passed
+            && self.valid_chunked_baseline_passed
+            && self.valid_close_delimited_baseline_passed
+            && self.valid_head_nonzero_length_baseline_passed
+            && self.valid_not_modified_nonzero_length_baseline_passed
+            && self.valid_no_content_baseline_passed
+            && self.valid_reset_content_zero_length_baseline_passed
+            && usize::try_from(self.cases_attempted) == Ok(MALFORMED_RESPONSE_BODY_CASES)
+            && self.bounded_terminations == self.cases_attempted
+            && self.upstream_requests_with_valid_secret == self.cases_attempted + 7
+            && self.second_downstream_requests_attempted == self.cases_attempted + 7
+            && self.downstream_connections_physically_closed == self.cases_attempted + 7
+            && self.second_downstream_responses == 0
+            && self.attacker_markers_forwarded == 0
+            && self.reusable_downstream_responses == 0
+            && self.exact_bad_gateway_responses == 6
+            && self.stream_fail_closed_terminations == 12
+            && self.close_delimited_limit_terminations == 1
+            && self.bodyless_status_terminations == 2
+            && self.isolated_complete_responses == 2
+            && self.exact_bad_gateway_responses
+                + self.stream_fail_closed_terminations
+                + self.close_delimited_limit_terminations
+                + self.bodyless_status_terminations
+                + self.isolated_complete_responses
+                == self.cases_attempted
+            && self.cases.len() == MALFORMED_RESPONSE_BODY_CASES
+            && MALFORMED_RESPONSE_BODY_CASE_NAMES
+                .iter()
+                .all(|name| self.cases.get(*name) == Some(&true))
+    }
+}
+
+/// Exercise valid and hostile upstream response bodies over real loopback
+/// sockets and the production ordinary-HTTP forwarding path.
+///
+/// # Errors
+///
+/// Returns an I/O error if a loopback socket cannot be created, a raw upstream
+/// task fails, or an isolated proxy cannot start or shut down.
+pub async fn probe_malformed_upstream_response_bodies() -> io::Result<MalformedUpstreamBodyEvidence>
+{
+    let mut evidence = MalformedUpstreamBodyEvidence::default();
+    let mut cases = valid_response_body_cases();
+    cases.extend(malformed_response_body_cases());
+
+    for (index, case) in cases.into_iter().enumerate() {
+        let result = run_raw_body_case(index, case).await?;
+        if result.valid_secret {
+            evidence.upstream_requests_with_valid_secret += 1;
+        }
+        if result.downstream.second_request_attempted {
+            evidence.second_downstream_requests_attempted += 1;
+        }
+        if result.downstream.physical_closed {
+            evidence.downstream_connections_physically_closed += 1;
+        }
+        if result.downstream.second_response_received {
+            evidence.second_downstream_responses += 1;
+        }
+        if result.negative {
+            record_negative_body_result(&mut evidence, &result);
+        } else {
+            record_valid_body_result(&mut evidence, &result);
+        }
+    }
+
+    evidence.probe_completed = true;
+    Ok(evidence)
+}
+
+fn record_valid_body_result(
+    evidence: &mut MalformedUpstreamBodyEvidence,
+    result: &RawBodyProbeResult,
+) {
+    let passed = body_probe_connection_is_closed(result)
+        && match result.name {
+            "valid_head_nonzero_length" => {
+                valid_downstream_no_body(&result.downstream.response, "HTTP/1.1 200 OK", "4096")
+            }
+            "valid_not_modified_nonzero_length" => valid_downstream_no_body(
+                &result.downstream.response,
+                "HTTP/1.1 304 Not Modified",
+                "4096",
+            ),
+            "valid_no_content" => valid_downstream_bodyless_status(
+                &result.downstream.response,
+                "HTTP/1.1 204 No Content",
+            ),
+            "valid_reset_content_zero_length" => valid_downstream_no_body(
+                &result.downstream.response,
+                "HTTP/1.1 205 Reset Content",
+                "0",
+            ),
+            _ => valid_downstream_http_body(&result.downstream.response, result.expected_body),
+        };
+    match result.name {
+        "valid_content_length_body" => {
+            evidence.valid_content_length_baseline_passed = passed;
+        }
+        "valid_chunked_body" => {
+            evidence.valid_chunked_baseline_passed = passed;
+        }
+        "valid_close_delimited_body" => {
+            evidence.valid_close_delimited_baseline_passed = passed;
+        }
+        "valid_head_nonzero_length" => {
+            evidence.valid_head_nonzero_length_baseline_passed = passed;
+        }
+        "valid_not_modified_nonzero_length" => {
+            evidence.valid_not_modified_nonzero_length_baseline_passed = passed;
+        }
+        "valid_no_content" => {
+            evidence.valid_no_content_baseline_passed = passed;
+        }
+        "valid_reset_content_zero_length" => {
+            evidence.valid_reset_content_zero_length_baseline_passed = passed;
+        }
+        _ => {}
+    }
+}
+
+fn record_negative_body_result(
+    evidence: &mut MalformedUpstreamBodyEvidence,
+    result: &RawBodyProbeResult,
+) {
+    evidence.cases_attempted += 1;
+    if result.downstream.physical_closed {
+        evidence.bounded_terminations += 1;
+    }
+    let marker_forwarded = result
+        .downstream
+        .response
+        .windows(MALFORMED_RESPONSE_MARKER.len())
+        .any(|window| window == MALFORMED_RESPONSE_MARKER);
+    if marker_forwarded {
+        evidence.attacker_markers_forwarded += 1;
+    }
+    let connection_closes = body_probe_connection_is_closed(result);
+    if !connection_closes {
+        evidence.reusable_downstream_responses += 1;
+    }
+
+    let outcome_passed = match result.expectation {
+        RawBodyExpectation::ExactBadGateway => {
+            let passed = is_exact_fixed_bad_gateway(&result.downstream.response);
+            if passed {
+                evidence.exact_bad_gateway_responses += 1;
+            }
+            passed
+        }
+        RawBodyExpectation::StreamFailClosed => {
+            let passed = downstream_stream_failure_fail_closed(&result.downstream.response);
+            if passed {
+                evidence.stream_fail_closed_terminations += 1;
+            }
+            passed
+        }
+        RawBodyExpectation::CloseDelimitedLimit => {
+            let passed =
+                valid_downstream_http_body(&result.downstream.response, result.expected_body);
+            if passed {
+                evidence.close_delimited_limit_terminations += 1;
+            }
+            passed
+        }
+        RawBodyExpectation::BodylessStatus(status) => {
+            let passed = valid_downstream_bodyless_status(&result.downstream.response, status);
+            if passed {
+                evidence.bodyless_status_terminations += 1;
+            }
+            passed
+        }
+        RawBodyExpectation::IsolatedComplete => {
+            let passed =
+                valid_downstream_http_body(&result.downstream.response, result.expected_body);
+            if passed {
+                evidence.isolated_complete_responses += 1;
+            }
+            passed
+        }
+    };
+    let passed = connection_closes && !marker_forwarded && outcome_passed;
+    evidence.cases.insert(result.name.to_owned(), passed);
+}
+
+fn body_probe_connection_is_closed(result: &RawBodyProbeResult) -> bool {
+    result.downstream.second_request_attempted
+        && result.downstream.physical_closed
+        && !result.downstream.second_response_received
+        && downstream_connection_closes(&result.downstream.response)
+}
+
 /// Exercise malformed upstream response heads through real loopback sockets
 /// and both production proxy forwarding paths.
 ///
@@ -504,6 +789,540 @@ async fn run_raw_upstream_case(index: usize, case: RawUpstreamCase) -> io::Resul
     })
 }
 
+#[derive(Clone, Copy)]
+enum RawBodyExpectation {
+    ExactBadGateway,
+    StreamFailClosed,
+    CloseDelimitedLimit,
+    BodylessStatus(&'static str),
+    IsolatedComplete,
+}
+
+struct RawBodyCase {
+    name: &'static str,
+    request_method: &'static str,
+    fragments: Vec<Vec<u8>>,
+    negative: bool,
+    expectation: RawBodyExpectation,
+    expected_body: &'static [u8],
+    max_response_body_bytes: usize,
+}
+
+struct RawBodyProbeResult {
+    name: &'static str,
+    negative: bool,
+    expectation: RawBodyExpectation,
+    expected_body: &'static [u8],
+    downstream: BodyClientObservation,
+    valid_secret: bool,
+}
+
+async fn run_raw_body_case(index: usize, case: RawBodyCase) -> io::Result<RawBodyProbeResult> {
+    let RawBodyCase {
+        name,
+        request_method,
+        fragments,
+        negative,
+        expectation,
+        expected_body,
+        max_response_body_bytes,
+    } = case;
+    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
+    let upstream_address = listener.local_addr()?;
+    let byte = u8::try_from(index + 96)
+        .map_err(|_| io::Error::other("malformed body case index overflow"))?;
+    let session = Arc::new(Secret::from_bytes([byte; 32]));
+    let upstream = Arc::new(Secret::from_bytes([byte.wrapping_add(1); 32]));
+    let bootstrap = Arc::new(Secret::from_bytes([byte.wrapping_add(2); 32]));
+    let server_secret = Arc::clone(&upstream);
+    let server = tokio::spawn(async move {
+        serve_one_raw_upstream_body(listener, server_secret, fragments)
+            .await
+            .map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))
+    });
+    let hostname = format!("rpackit-{}.localhost", hex::encode([byte; 16]));
+    let limits = TransportLimits {
+        max_response_body_bytes,
+        ..TransportLimits::default()
+    };
+    let config = ProxyConfig::explicit(
+        upstream_address,
+        hostname,
+        TransportSecrets::new(Arc::clone(&session), upstream, bootstrap),
+    )
+    .map_err(io::Error::other)?
+    .with_limits(limits);
+    let proxy = RunningProxy::start(config)
+        .await
+        .map_err(io::Error::other)?;
+    let client = request_authenticated_body_probe(&proxy, &session, request_method).await?;
+    proxy.shutdown().await.map_err(io::Error::other)?;
+    let valid_secret = server
+        .await
+        .map_err(|_| io::Error::other("raw upstream body task terminated"))??;
+    Ok(RawBodyProbeResult {
+        name,
+        negative,
+        expectation,
+        expected_body,
+        downstream: client,
+        valid_secret,
+    })
+}
+
+async fn serve_one_raw_upstream_body(
+    listener: TcpListener,
+    expected_secret: Arc<Secret>,
+    fragments: Vec<Vec<u8>>,
+) -> io::Result<bool> {
+    let (mut socket, peer) = timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .map_err(|_| io::Error::other("raw upstream body accept timed out"))??;
+    if !peer.ip().is_loopback() {
+        return Err(io::Error::other(
+            "raw upstream body received a non-loopback peer",
+        ));
+    }
+    let request = read_bounded_header(&mut socket).await?;
+    let valid_secret =
+        single_header_matches(&request, b"shiny-shared-secret", expected_secret.as_ref());
+    for fragment in fragments {
+        if socket.write_all(&fragment).await.is_err() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let _ = socket.shutdown().await;
+    Ok(valid_secret)
+}
+
+struct BodyClientObservation {
+    response: Vec<u8>,
+    physical_closed: bool,
+    second_request_attempted: bool,
+    second_response_received: bool,
+}
+
+async fn request_authenticated_body_probe(
+    proxy: &RunningProxy,
+    session: &Secret,
+    method: &str,
+) -> io::Result<BodyClientObservation> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), proxy.address().port());
+    let (request, second_request) = session.with_exposed(|value| {
+        let authority = proxy.address().authority();
+        (
+            format!(
+                "{method} /malformed-upstream-body-probe HTTP/1.1\r\nHost: {authority}\r\nCookie: {SESSION_COOKIE_NAME}={value}\r\nConnection: keep-alive\r\n\r\n"
+            ),
+            format!(
+                "GET /malformed-upstream-body-probe-second HTTP/1.1\r\nHost: {authority}\r\nCookie: {SESSION_COOKIE_NAME}={value}\r\nConnection: keep-alive\r\n\r\n"
+            ),
+        )
+    });
+    let mut socket = TcpStream::connect(address).await?;
+    socket.write_all(request.as_bytes()).await?;
+    let mut response = Vec::with_capacity(1024);
+    let mut physical_closed = false;
+    let mut second_request_attempted = false;
+    let _bounded = matches!(
+        timeout(Duration::from_secs(3), async {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                if response.len() >= 512 * 1024 {
+                    return Err(io::Error::other(
+                        "downstream body probe exceeded response limit",
+                    ));
+                }
+                if !second_request_attempted
+                    && response.windows(4).any(|window| window == b"\r\n\r\n")
+                {
+                    second_request_attempted = true;
+                    let _ = socket.write_all(second_request.as_bytes()).await;
+                }
+                match socket.read(&mut buffer).await {
+                    Ok(0) | Err(_) => {
+                        physical_closed = true;
+                        if !second_request_attempted {
+                            second_request_attempted = true;
+                            let _ = socket.write_all(second_request.as_bytes()).await;
+                        }
+                        return Ok(());
+                    }
+                    Ok(read) => response.extend_from_slice(&buffer[..read]),
+                }
+            }
+        })
+        .await,
+        Ok(Ok(()))
+    );
+    if !second_request_attempted {
+        second_request_attempted = true;
+        let _ = timeout(
+            Duration::from_secs(1),
+            socket.write_all(second_request.as_bytes()),
+        )
+        .await;
+    }
+    let second_response_received = raw_http_response_count(&response) > 1;
+    Ok(BodyClientObservation {
+        response,
+        physical_closed,
+        second_request_attempted,
+        second_response_received,
+    })
+}
+
+fn valid_response_body_cases() -> Vec<RawBodyCase> {
+    const FIXED_BODY: &[u8] = b"safe-content-length";
+    const CHUNKED_BODY: &[u8] = b"safe-chunked-body";
+    const CLOSE_BODY: &[u8] = b"safe-close-body";
+
+    let fixed = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        FIXED_BODY.len(),
+        String::from_utf8_lossy(FIXED_BODY)
+    )
+    .into_bytes();
+    let chunked = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n8\r\n-chunked\r\n5\r\n-body\r\n0\r\n\r\n"
+        .to_vec();
+    let close =
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nsafe-close-body"
+            .to_vec();
+    let head = b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n".to_vec();
+    let not_modified =
+        b"HTTP/1.1 304 Not Modified\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n".to_vec();
+    let no_content = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
+    let reset_content =
+        b"HTTP/1.1 205 Reset Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+
+    vec![
+        RawBodyCase {
+            name: "valid_content_length_body",
+            request_method: "GET",
+            fragments: split_wire(&fixed, 3),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: FIXED_BODY,
+            max_response_body_bytes: 1024,
+        },
+        RawBodyCase {
+            name: "valid_chunked_body",
+            request_method: "GET",
+            fragments: split_wire(&chunked, 2),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: CHUNKED_BODY,
+            max_response_body_bytes: 1024,
+        },
+        RawBodyCase {
+            name: "valid_close_delimited_body",
+            request_method: "GET",
+            fragments: split_wire(&close, 5),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: CLOSE_BODY,
+            max_response_body_bytes: 1024,
+        },
+        RawBodyCase {
+            name: "valid_head_nonzero_length",
+            request_method: "HEAD",
+            fragments: split_wire(&head, 3),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: b"",
+            max_response_body_bytes: 8,
+        },
+        RawBodyCase {
+            name: "valid_not_modified_nonzero_length",
+            request_method: "GET",
+            fragments: split_wire(&not_modified, 3),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: b"",
+            max_response_body_bytes: 8,
+        },
+        RawBodyCase {
+            name: "valid_no_content",
+            request_method: "GET",
+            fragments: split_wire(&no_content, 3),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: b"",
+            max_response_body_bytes: 8,
+        },
+        RawBodyCase {
+            name: "valid_reset_content_zero_length",
+            request_method: "GET",
+            fragments: split_wire(&reset_content, 3),
+            negative: false,
+            expectation: RawBodyExpectation::IsolatedComplete,
+            expected_body: b"",
+            max_response_body_bytes: 8,
+        },
+    ]
+}
+
+#[allow(clippy::too_many_lines)]
+fn malformed_response_body_cases() -> Vec<RawBodyCase> {
+    let case = |name, response: Vec<u8>, expectation, expected_body, max_response_body_bytes| {
+        RawBodyCase {
+            name,
+            request_method: "GET",
+            fragments: split_wire(&response, 7),
+            negative: true,
+            expectation,
+            expected_body,
+            max_response_body_bytes,
+        }
+    };
+    let mut oversized_trailer =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n0\r\nX-Oversized: "
+            .to_vec();
+    oversized_trailer.extend(std::iter::repeat_n(b'a', 33 * 1024));
+    oversized_trailer.extend_from_slice(MALFORMED_RESPONSE_MARKER);
+    oversized_trailer.extend_from_slice(b"\r\n\r\n");
+    let mut too_many_trailers =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n0\r\n"
+            .to_vec();
+    for _ in 0..TransportLimits::default().max_headers {
+        too_many_trailers.extend_from_slice(b"X-Filler: a\r\n");
+    }
+    too_many_trailers.extend_from_slice(
+        format!("X-Rpackit-Attacker-Canary: {MALFORMED_RESPONSE_MARKER_TEXT}\r\n\r\n").as_bytes(),
+    );
+
+    vec![
+        case(
+            "declared_length_over_limit",
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            8,
+        ),
+        case(
+            "declared_trailer",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Rpackit-Attacker-Canary\r\nConnection: close\r\n\r\n0\r\nX-Rpackit-Attacker-Canary: {MALFORMED_RESPONSE_MARKER_TEXT}\r\n\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            1024,
+        ),
+        case(
+            "no_content_content_length",
+            format!(
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            1024,
+        ),
+        case(
+            "no_content_transfer_encoding",
+            format!(
+                "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            1024,
+        ),
+        case(
+            "reset_content_nonzero_length",
+            format!(
+                "HTTP/1.1 205 Reset Content\r\nContent-Length: 1\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            1024,
+        ),
+        case(
+            "reset_content_transfer_encoding",
+            format!(
+                "HTTP/1.1 205 Reset Content\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::ExactBadGateway,
+            b"",
+            1024,
+        ),
+        case(
+            "truncated_content_length_empty",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n".to_vec(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "truncated_content_length_partial",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\nsafe-prefix"
+                .to_vec(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "invalid_chunk_size",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nnot-hex\r\n{MALFORMED_RESPONSE_MARKER_TEXT}\r\n0\r\n\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "overflowing_chunk_size",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nFFFFFFFFFFFFFFFFF\r\n{MALFORMED_RESPONSE_MARKER_TEXT}\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "truncated_chunk_data",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n20\r\nsafe-prefix"
+                .to_vec(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "missing_chunk_data_crlf",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafeX\r\n{MALFORMED_RESPONSE_MARKER_TEXT}\r\n0\r\n\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "missing_terminal_chunk",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n"
+                .to_vec(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "malformed_trailer",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n0\r\nBad Trailer: {MALFORMED_RESPONSE_MARKER_TEXT}\r\n\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "protected_trailer",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n0\r\nShiny-Shared-Secret: {MALFORMED_RESPONSE_MARKER_TEXT}\r\n\r\n"
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            1024,
+        ),
+        case(
+            "oversized_trailer",
+            oversized_trailer,
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            64 * 1024,
+        ),
+        case(
+            "too_many_trailers",
+            too_many_trailers,
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            64 * 1024,
+        ),
+        case(
+            "chunked_body_over_limit",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nsafe\r\n{:x}\r\n{MALFORMED_RESPONSE_MARKER_TEXT}\r\n0\r\n\r\n",
+                MALFORMED_RESPONSE_MARKER.len()
+            )
+            .into_bytes(),
+            RawBodyExpectation::StreamFailClosed,
+            b"",
+            4,
+        ),
+        case(
+            "close_delimited_body_over_limit",
+            format!(
+                "HTTP/1.1 200 OK\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::CloseDelimitedLimit,
+            b"",
+            0,
+        ),
+        case(
+            "no_content_malicious_body",
+            format!("HTTP/1.1 204 No Content\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}")
+                .into_bytes(),
+            RawBodyExpectation::BodylessStatus("HTTP/1.1 204 No Content"),
+            b"",
+            1024,
+        ),
+        case(
+            "reset_content_close_delimited_body",
+            format!(
+                "HTTP/1.1 205 Reset Content\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}"
+            )
+            .into_bytes(),
+            RawBodyExpectation::BodylessStatus("HTTP/1.1 205 Reset Content"),
+            b"",
+            1024,
+        ),
+        case(
+            "bytes_after_terminal_chunk",
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nsafe\r\n0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}",
+                MALFORMED_RESPONSE_MARKER.len()
+            )
+            .into_bytes(),
+            RawBodyExpectation::IsolatedComplete,
+            b"safe",
+            1024,
+        ),
+        case(
+            "bytes_after_content_length",
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nsafeHTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{MALFORMED_RESPONSE_MARKER_TEXT}",
+                MALFORMED_RESPONSE_MARKER.len()
+            )
+            .into_bytes(),
+            RawBodyExpectation::IsolatedComplete,
+            b"safe",
+            1024,
+        ),
+    ]
+}
+
+fn split_wire(wire: &[u8], fragment_size: usize) -> Vec<Vec<u8>> {
+    wire.chunks(fragment_size).map(<[u8]>::to_vec).collect()
+}
+
+fn raw_http_response_count(response: &[u8]) -> usize {
+    response
+        .windows(b"HTTP/1.1 ".len())
+        .filter(|window| *window == b"HTTP/1.1 ")
+        .count()
+}
+
 fn parse_raw_response(response: &[u8]) -> Option<(&str, BTreeMap<String, String>, &[u8])> {
     let header_end = response
         .windows(4)
@@ -550,6 +1369,112 @@ fn parse_raw_response(response: &[u8]) -> Option<(&str, BTreeMap<String, String>
         }
     }
     Some((status, headers, &response[header_end..]))
+}
+
+fn valid_downstream_http_body(response: &[u8], expected_body: &[u8]) -> bool {
+    let Some((status, headers, wire_body)) = parse_raw_response(response) else {
+        return false;
+    };
+    status == "HTTP/1.1 200 OK"
+        && downstream_connection_header_closes(&headers)
+        && decode_downstream_body(&headers, wire_body).as_deref() == Some(expected_body)
+}
+
+fn valid_downstream_no_body(
+    response: &[u8],
+    expected_status: &str,
+    expected_content_length: &str,
+) -> bool {
+    let Some((status, headers, wire_body)) = parse_raw_response(response) else {
+        return false;
+    };
+    status == expected_status
+        && downstream_connection_header_closes(&headers)
+        && headers
+            .get("content-length")
+            .is_some_and(|length| length == expected_content_length)
+        && !headers.contains_key("transfer-encoding")
+        && wire_body.is_empty()
+}
+
+fn valid_downstream_bodyless_status(response: &[u8], expected_status: &str) -> bool {
+    let Some((status, headers, wire_body)) = parse_raw_response(response) else {
+        return false;
+    };
+    status == expected_status
+        && downstream_connection_header_closes(&headers)
+        && headers
+            .get("content-length")
+            .is_none_or(|length| length == "0")
+        && !headers.contains_key("transfer-encoding")
+        && wire_body.is_empty()
+}
+
+fn downstream_connection_closes(response: &[u8]) -> bool {
+    if response.is_empty() {
+        return true;
+    }
+    parse_raw_response(response)
+        .is_none_or(|(_, headers, _)| downstream_connection_header_closes(&headers))
+}
+
+fn downstream_connection_header_closes(headers: &BTreeMap<String, String>) -> bool {
+    headers.get("connection").is_some_and(|value| {
+        value
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("close"))
+    })
+}
+
+fn downstream_stream_failure_fail_closed(response: &[u8]) -> bool {
+    if response.is_empty() {
+        return true;
+    }
+    let Some((status, headers, wire_body)) = parse_raw_response(response) else {
+        return true;
+    };
+    if status != "HTTP/1.1 200 OK" || !downstream_connection_header_closes(&headers) {
+        return false;
+    }
+    decode_downstream_body(&headers, wire_body).is_none()
+}
+
+fn decode_downstream_body(headers: &BTreeMap<String, String>, wire_body: &[u8]) -> Option<Vec<u8>> {
+    match (
+        headers.get("content-length"),
+        headers.get("transfer-encoding"),
+    ) {
+        (Some(length), None) => {
+            let length = length.parse::<usize>().ok()?;
+            (wire_body.len() == length).then(|| wire_body.to_vec())
+        }
+        (None, Some(encoding)) if encoding.eq_ignore_ascii_case("chunked") => {
+            decode_chunked_body(wire_body)
+        }
+        (Some(_) | None, Some(_)) => None,
+        (None, None) => Some(wire_body.to_vec()),
+    }
+}
+
+fn decode_chunked_body(mut wire: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = wire.windows(2).position(|window| window == b"\r\n")?;
+        let size_text = std::str::from_utf8(&wire[..line_end]).ok()?;
+        if size_text.is_empty() || size_text.contains(';') {
+            return None;
+        }
+        let size = usize::from_str_radix(size_text, 16).ok()?;
+        wire = &wire[line_end + 2..];
+        if size == 0 {
+            return (wire == b"\r\n").then_some(decoded);
+        }
+        if wire.len() < size + 2 || &wire[size..size + 2] != b"\r\n" {
+            return None;
+        }
+        decoded.extend_from_slice(&wire[..size]);
+        wire = &wire[size + 2..];
+    }
 }
 
 fn headers_match_exact(headers: &BTreeMap<String, String>, expected: &[(&str, &str)]) -> bool {

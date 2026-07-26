@@ -253,12 +253,54 @@ both passing baselines, 32/32 exact fixed `502` results, 34/34 valid synthetic
 upstream credentials, 17/17 normalized WebSocket requests, no downstream
 upgrade, and zero forwarded markers.
 
-The guard deliberately does not claim that all errors discovered after a
-response head has been released can be rewritten into a `502`. The remaining
-release work includes truncated fixed-length bodies, malformed chunks and
-trailers, and rate/idle behavior while a response body is streaming; those
-cases must prove bounded termination without response splitting or a reusable
-connection.
+The body guard deliberately does not claim that errors discovered after a
+response head has been released can be rewritten into a `502`. A declared
+trailer or over-limit `Content-Length` is rejected before downstream head
+release. After release, declared/configured byte limits, upstream parser/read
+errors, and trailer frames fail with a fixed secret-free internal error. The
+downstream response already carries `Connection: close`, so the corresponding
+gate accepts either closure before downstream head serialization or
+detectably incomplete framing, and requires bounded termination with no
+trailer, attacker marker, second response, or reusable connection. The split
+between those two safe outcomes is scheduling-dependent. The close-delimited
+over-limit case is necessarily delimited by that close; its oracle therefore
+requires an empty bounded response body and no marker. The configured byte
+limit applies to the proxied, encoded HTTP body. Expansion after
+`Content-Encoding` decompression is not bounded by this guard and remains part
+of the open resource-abuse gate.
+
+The forwarder records the request method before the upstream request is moved.
+Its body policy treats `HEAD`, `204`, `205`, and `304` as body-forbidden.
+`HEAD` and `304` may preserve a nonzero hypothetical `Content-Length` in the
+downstream head without enforcing it as streamed bytes. `204` rejects either
+`Content-Length` or `Transfer-Encoding` before releasing a downstream head.
+`205` accepts no framing or `Content-Length: 0`, rejects a nonzero declared
+length or any `Transfer-Encoding` before release, and drops any streamed
+content. Rejecting even nominally empty chunked framing avoids stream/trailer
+ambiguity on a status that must not carry content. The body-forbidden guard
+has a zero-byte streaming allowance, so a data frame cannot leak when no-body
+semantics are in effect.
+
+The raw body matrix proves fragmented valid fixed-length, chunked, and
+close-delimited baselines plus bodyless `HEAD` and `304` responses carrying
+nonzero hypothetical lengths, a bodyless `204` without framing, and a bodyless
+`205` with `Content-Length: 0`. Its 23 negatives require 6 exact pre-stream
+`502` responses, 12 stream fail-closed terminations, 1 empty
+close-delimited-limit cutoff, 2 bodyless malicious-status terminations, and 2
+response-splitting attempts isolated to the first safe response. The split
+between withheld-head and incomplete-framing outcomes among the 12 streaming
+failures is scheduling-dependent. The trailer set includes malformed,
+protected, oversized, and 97-field cases against the configured 96-field
+maximum.
+
+All 30 first upstream requests must carry exactly one synthetic upstream
+credential. After each first response head or physical close, the raw client
+attempts a second authenticated request on the same keep-alive downstream
+socket. Passing requires 30/30 attempts, 30/30 physical closes before proxy
+shutdown, zero second responses, zero reusable connections, bounded
+termination, and zero forwarded attacker markers. The response-splitting and
+no-body fixtures omit upstream `Connection: close` where applicable so the
+observed downstream close is enforced by the proxy.
 
 ## Evidence and release boundary
 
@@ -271,13 +313,13 @@ hostnames, booleans, counts, and route names.
 A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
-The remaining matrix also includes actual browser escape-path attempts, HTTP
-idle/body-rate and WebSocket byte-rate abuse, malformed streamed-upstream-body
-behavior, and the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6
-wildcard overlap, strict malformed upstream response-head rejection, and
-WebSocket activity-idle shutdown are already tested on the development
-environment. Protocol-2 R launcher ownership and Windows Job Objects are Phase
-2 work.
+The remaining matrix includes actual browser escape-path attempts, HTTP
+idle/body-rate and WebSocket byte-rate abuse, crash profile persistence, and
+the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6 wildcard overlap,
+strict malformed upstream response-head rejection, streamed response-body and
+trailer fail-closed behavior, and WebSocket activity-idle shutdown are tested
+on the development environment. Protocol-2 R launcher ownership and Windows
+Job Objects are Phase 2 work.
 
 ## Maintainer rules
 

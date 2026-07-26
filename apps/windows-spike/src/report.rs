@@ -4,8 +4,8 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 
 use rpackit_transport::HostResolution;
 use rpackit_transport_testkit::{
-    BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, MalformedUpstreamEvidence,
-    UpstreamSnapshot,
+    BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, MalformedUpstreamBodyEvidence,
+    MalformedUpstreamEvidence, UpstreamSnapshot,
 };
 use serde::Serialize;
 
@@ -42,6 +42,7 @@ pub struct DevelopmentGates {
     pub webview_random_hostname_reached_loopback: bool,
     pub windows_listener_overlap_all_variants_pass: bool,
     pub malformed_upstream_response_heads_fail_closed: bool,
+    pub malformed_upstream_response_bodies_fail_closed: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -71,6 +72,7 @@ impl DevelopmentGates {
         resolution: &HostResolution,
         listener_overlap: &ListenerOverlapEvidence,
         malformed_upstream: &MalformedUpstreamEvidence,
+        malformed_upstream_bodies: &MalformedUpstreamBodyEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -92,6 +94,8 @@ impl DevelopmentGates {
                 .all_variants_prove_exact_proxy_ownership(),
             malformed_upstream_response_heads_fail_closed: malformed_upstream
                 .all_response_heads_fail_closed(),
+            malformed_upstream_response_bodies_fail_closed: malformed_upstream_bodies
+                .all_response_bodies_fail_closed(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -148,6 +152,7 @@ impl DevelopmentGates {
             self.webview_random_hostname_reached_loopback,
             self.windows_listener_overlap_all_variants_pass,
             self.malformed_upstream_response_heads_fail_closed,
+            self.malformed_upstream_response_bodies_fail_closed,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -184,6 +189,7 @@ pub struct AcceptanceReport {
     pub hostname_resolution: ResolutionReport,
     pub listener_overlap: ListenerOverlapEvidence,
     pub malformed_upstream_response_heads: MalformedUpstreamEvidence,
+    pub malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -201,6 +207,7 @@ impl AcceptanceReport {
         resolution: HostResolution,
         listener_overlap: ListenerOverlapEvidence,
         malformed_upstream_response_heads: MalformedUpstreamEvidence,
+        malformed_upstream_response_bodies: MalformedUpstreamBodyEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -225,15 +232,17 @@ impl AcceptanceReport {
                 "resource_and_timeout_matrix",
                 "HTTP idle/body-rate and WebSocket byte-rate abuse gates are not yet complete; WebSocket activity-idle shutdown is tested",
             ),
-            (
-                "malformed_upstream_body_matrix",
-                "strict HTTP and WebSocket response-head rejection is proven separately; truncated and malformed streamed-body framing still needs its complete matrix",
-            ),
         ]);
         if !listener_overlap.all_variants_prove_exact_proxy_ownership() {
             unproven_release_gates.insert(
                 "listener_overlap_matrix",
                 "IPv4 wildcard, IPv6 v6-only wildcard, and IPv6 dual-stack wildcard traffic to both exact listeners have not all proven exact-proxy ownership with zero wildcard accepts",
+            );
+        }
+        if !malformed_upstream_response_bodies.all_response_bodies_fail_closed() {
+            unproven_release_gates.insert(
+                "malformed_upstream_body_matrix",
+                "valid fragmented body baselines plus truncated fixed-length, malformed chunked, unsafe trailer, limit, and response-splitting cases have not all proven bounded fail-closed behavior",
             );
         }
         Self {
@@ -244,6 +253,7 @@ impl AcceptanceReport {
             hostname_resolution: ResolutionReport::from(resolution),
             listener_overlap,
             malformed_upstream_response_heads,
+            malformed_upstream_response_bodies,
             cookie,
             browser,
             upstream,
@@ -320,18 +330,35 @@ mod tests {
     use super::*;
 
     fn report(listener_overlap: ListenerOverlapEvidence) -> AcceptanceReport {
-        report_with_malformed(listener_overlap, MalformedUpstreamEvidence::default())
+        report_with_evidence(
+            listener_overlap,
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+        )
     }
 
     fn report_with_malformed(
         listener_overlap: ListenerOverlapEvidence,
         malformed_upstream: MalformedUpstreamEvidence,
     ) -> AcceptanceReport {
+        report_with_evidence(
+            listener_overlap,
+            malformed_upstream,
+            MalformedUpstreamBodyEvidence::default(),
+        )
+    }
+
+    fn report_with_evidence(
+        listener_overlap: ListenerOverlapEvidence,
+        malformed_upstream: MalformedUpstreamEvidence,
+        malformed_upstream_bodies: MalformedUpstreamBodyEvidence,
+    ) -> AcceptanceReport {
         AcceptanceReport::new(
             None,
             HostResolution::Unavailable,
             listener_overlap,
             malformed_upstream,
+            malformed_upstream_bodies,
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -460,6 +487,7 @@ mod tests {
             &HostResolution::Unavailable,
             &ListenerOverlapEvidence::default(),
             &evidence,
+            &MalformedUpstreamBodyEvidence::default(),
             &CookieEvidence::default(),
             &BrowserReport::default(),
             &UpstreamSnapshot::default(),
@@ -484,6 +512,107 @@ mod tests {
         assert!(!serialized.contains("rp-"));
         assert!(
             report
+                .unproven_release_gates
+                .contains_key("malformed_upstream_body_matrix")
+        );
+        assert!(!report.phase1_release_ready);
+    }
+
+    #[test]
+    fn malformed_body_gate_is_removed_only_after_every_named_case_passes() {
+        let cases = [
+            "declared_length_over_limit",
+            "declared_trailer",
+            "no_content_content_length",
+            "no_content_transfer_encoding",
+            "reset_content_nonzero_length",
+            "reset_content_transfer_encoding",
+            "truncated_content_length_empty",
+            "truncated_content_length_partial",
+            "invalid_chunk_size",
+            "overflowing_chunk_size",
+            "truncated_chunk_data",
+            "missing_chunk_data_crlf",
+            "missing_terminal_chunk",
+            "malformed_trailer",
+            "protected_trailer",
+            "oversized_trailer",
+            "too_many_trailers",
+            "chunked_body_over_limit",
+            "close_delimited_body_over_limit",
+            "no_content_malicious_body",
+            "reset_content_close_delimited_body",
+            "bytes_after_terminal_chunk",
+            "bytes_after_content_length",
+        ]
+        .into_iter()
+        .map(|name| (name.to_owned(), true))
+        .collect::<BTreeMap<_, _>>();
+        let evidence = MalformedUpstreamBodyEvidence {
+            valid_content_length_baseline_passed: true,
+            valid_chunked_baseline_passed: true,
+            valid_close_delimited_baseline_passed: true,
+            valid_head_nonzero_length_baseline_passed: true,
+            valid_not_modified_nonzero_length_baseline_passed: true,
+            valid_no_content_baseline_passed: true,
+            valid_reset_content_zero_length_baseline_passed: true,
+            cases_attempted: 23,
+            exact_bad_gateway_responses: 6,
+            stream_fail_closed_terminations: 12,
+            close_delimited_limit_terminations: 1,
+            bodyless_status_terminations: 2,
+            isolated_complete_responses: 2,
+            bounded_terminations: 23,
+            upstream_requests_with_valid_secret: 30,
+            second_downstream_requests_attempted: 30,
+            downstream_connections_physically_closed: 30,
+            second_downstream_responses: 0,
+            attacker_markers_forwarded: 0,
+            reusable_downstream_responses: 0,
+            cases,
+            probe_completed: true,
+        };
+        assert!(evidence.all_response_bodies_fail_closed());
+
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &MalformedUpstreamEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &BrowserReport::default(),
+            &UpstreamSnapshot::default(),
+            &CollectorSnapshot::default(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.malformed_upstream_response_bodies_fail_closed);
+
+        let report = report_with_evidence(
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            evidence,
+        );
+        let serialized = serde_json::to_string(&report).unwrap_or_default();
+        assert!(serialized.contains("\"cases_attempted\":23"));
+        assert!(serialized.contains("\"exact_bad_gateway_responses\":6"));
+        assert!(serialized.contains("\"stream_fail_closed_terminations\":12"));
+        assert!(serialized.contains("\"close_delimited_limit_terminations\":1"));
+        assert!(serialized.contains("\"bodyless_status_terminations\":2"));
+        assert!(serialized.contains("\"isolated_complete_responses\":2"));
+        assert!(serialized.contains("\"bounded_terminations\":23"));
+        assert!(serialized.contains("\"upstream_requests_with_valid_secret\":30"));
+        assert!(serialized.contains("\"second_downstream_requests_attempted\":30"));
+        assert!(serialized.contains("\"downstream_connections_physically_closed\":30"));
+        assert!(serialized.contains("\"second_downstream_responses\":0"));
+        assert!(serialized.contains("\"attacker_markers_forwarded\":0"));
+        assert!(serialized.contains("\"reusable_downstream_responses\":0"));
+        assert!(!serialized.contains("rpackit-malformed-upstream-marker"));
+        assert!(
+            !report
                 .unproven_release_gates
                 .contains_key("malformed_upstream_body_matrix")
         );

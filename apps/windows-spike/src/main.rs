@@ -21,7 +21,7 @@ use rpackit_transport::{
 };
 use rpackit_transport_testkit::{
     ExternalCollector, MockUpstream, probe_listener_overlap,
-    probe_malformed_upstream_response_heads,
+    probe_malformed_upstream_response_bodies, probe_malformed_upstream_response_heads,
 };
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
@@ -110,6 +110,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let process_arguments_secret_free = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
+    let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
     let secrets = TransportSecrets::generate()?;
     let collector = ExternalCollector::start().await?;
     let upstream = MockUpstream::start(secrets.upstream(), collector.address()).await?;
@@ -181,6 +182,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &resolution,
         &listener_overlap,
         &malformed_upstream,
+        &malformed_upstream_bodies,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -196,6 +198,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         resolution,
         listener_overlap,
         malformed_upstream,
+        malformed_upstream_bodies,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

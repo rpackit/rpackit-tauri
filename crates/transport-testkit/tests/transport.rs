@@ -20,7 +20,8 @@ use rpackit_transport::{
 #[cfg(windows)]
 use rpackit_transport_testkit::probe_listener_overlap;
 use rpackit_transport_testkit::{
-    ExternalCollector, MockUpstream, probe_malformed_upstream_response_heads,
+    ExternalCollector, MockUpstream, probe_malformed_upstream_response_bodies,
+    probe_malformed_upstream_response_heads,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -775,6 +776,77 @@ async fn malformed_upstream_response_heads_fail_closed() -> Result<(), TestError
         "{evidence:#?}"
     );
     assert!(evidence.all_response_heads_fail_closed(), "{evidence:#?}");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_upstream_response_bodies_fail_closed() -> Result<(), TestError> {
+    let evidence = probe_malformed_upstream_response_bodies().await?;
+
+    assert!(evidence.probe_completed, "{evidence:#?}");
+    assert!(
+        evidence.valid_content_length_baseline_passed,
+        "{evidence:#?}"
+    );
+    assert!(evidence.valid_chunked_baseline_passed, "{evidence:#?}");
+    assert!(
+        evidence.valid_close_delimited_baseline_passed,
+        "{evidence:#?}"
+    );
+    assert!(
+        evidence.valid_head_nonzero_length_baseline_passed,
+        "{evidence:#?}"
+    );
+    assert!(
+        evidence.valid_not_modified_nonzero_length_baseline_passed,
+        "{evidence:#?}"
+    );
+    assert!(evidence.valid_no_content_baseline_passed, "{evidence:#?}");
+    assert!(
+        evidence.valid_reset_content_zero_length_baseline_passed,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.cases_attempted, 23, "{evidence:#?}");
+    assert_eq!(evidence.exact_bad_gateway_responses, 6, "{evidence:#?}");
+    assert_eq!(
+        evidence.stream_fail_closed_terminations, 12,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.close_delimited_limit_terminations, 1,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.bodyless_status_terminations, 2, "{evidence:#?}");
+    assert_eq!(evidence.isolated_complete_responses, 2, "{evidence:#?}");
+    assert_eq!(
+        evidence.bounded_terminations, evidence.cases_attempted,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.upstream_requests_with_valid_secret,
+        evidence.cases_attempted + 7,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.second_downstream_requests_attempted,
+        evidence.cases_attempted + 7,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.downstream_connections_physically_closed,
+        evidence.cases_attempted + 7,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.second_downstream_responses, 0, "{evidence:#?}");
+    assert_eq!(evidence.attacker_markers_forwarded, 0, "{evidence:#?}");
+    assert_eq!(evidence.reusable_downstream_responses, 0, "{evidence:#?}");
+    assert_eq!(evidence.cases.len(), evidence.cases_attempted as usize);
+    assert!(
+        evidence.cases.values().all(|passed| *passed),
+        "{evidence:#?}"
+    );
+    assert!(evidence.all_response_bodies_fail_closed(), "{evidence:#?}");
 
     Ok(())
 }

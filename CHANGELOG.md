@@ -46,6 +46,32 @@ All notable changes to this pre-release repository are documented here.
 - Latched every pre-validation upstream read error permanently and added a
   scripted `AsyncRead` regression proving a retry cannot release retained
   prefix bytes.
+- Added a streaming upstream response-body guard that enforces declared and
+  configured lengths, maps parser/read failures to fixed secret-free internal
+  errors, and rejects every trailer frame without forwarding its fields.
+  Declared trailers and an over-limit `Content-Length` fail before downstream
+  head release; errors discovered after streaming begins terminate with
+  incomplete framing and a non-reusable downstream connection. The cap
+  measures the proxied, encoded HTTP body; decompression expansion remains an
+  open resource-abuse gate.
+- Captured the upstream request method in response normalization. `HEAD` and
+  `304` now preserve a hypothetical nonzero `Content-Length` without false
+  truncation while their guard remains body-forbidden; `204` rejects
+  `Content-Length` and `Transfer-Encoding`; `205` accepts empty framing or
+  `Content-Length: 0` but rejects nonzero lengths or any `Transfer-Encoding`.
+  All four semantics have a zero-byte streaming allowance.
+- Added seven fragmented valid-body/semantics baselines and 23 raw loopback
+  negative body cases covering truncated fixed-length bodies, malformed or
+  incomplete chunks, malformed/protected/oversized/excess-count trailers,
+  chunked and close-delimited limit overflow, forbidden framing or malicious
+  bytes on `204` and `205`, and response-splitting bytes after a terminal
+  chunk or `Content-Length`. Passing requires 6 exact `502` responses, 12
+  bounded stream fail-closed terminations, 1 empty close-delimited cutoff, 2
+  bodyless malicious-status terminations, 2 isolated first responses, and
+  30/30 valid synthetic upstream credentials. The keep-alive isolation oracle
+  also requires 30/30 second authenticated request attempts, 30/30 physical
+  downstream closes before proxy shutdown, zero second responses, zero
+  reusable downstream connections, and zero forwarded attacker markers.
 - Refreshed the compatible Futures and Hyper stack together and validated the
   combined lockfile through the real WebView2 gate. `webview2-com` remains on
   `0.38.2` until Tauri/wry migrate their Windows COM type graph from 0.61 to
@@ -78,9 +104,8 @@ All notable changes to this pre-release repository are documented here.
 - Browser escape controls are configured but have not all been exercised by
   real negative navigation, popup, download, scheme, devtools, extension, and
   debugger attempts.
-- HTTP idle/body-rate and WebSocket byte-rate abuse, plus truncated and
-  malformed streamed-upstream-body handling, are not finished. WebSocket
-  activity-idle shutdown and malformed response-head rejection are already
-  tested.
+- HTTP idle/body-rate and WebSocket byte-rate abuse remain unfinished.
+  WebSocket activity-idle shutdown and both malformed response-head and
+  streamed response-body/trailer rejection are tested.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.

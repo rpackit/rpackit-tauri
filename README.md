@@ -193,6 +193,54 @@ recorded WebView2 `150.0.4078.99` run passed both baselines, all 32 negatives,
 34/34 synthetic credentials, 17/17 normalized WebSocket requests, zero
 downstream upgrades, and zero forwarded markers.
 
+Malformed and truncated ordinary HTTP bodies have a separate streaming gate.
+The proxy rejects a declared trailer or an over-limit `Content-Length` before
+releasing the downstream response head. Once streaming begins, it enforces the
+declared and configured byte limits, converts upstream parser/read failures to
+fixed secret-free internal errors, and rejects trailer frames without
+forwarding their fields. Because a response head cannot be replaced after it
+has been released, those streaming failures are required to close before head
+serialization or end with detectably incomplete framing and
+`Connection: close`, not a synthetic 502. Which of those two safe outcomes
+occurs can depend on whether the downstream server polls the failed body
+before writing its head. The one close-delimited overflow case is cut off with
+an empty body and a non-reusable connection because closing is itself that
+response's delimiter. This byte cap measures the proxied, encoded HTTP body;
+resource abuse through `Content-Encoding` decompression expansion remains an
+open gate.
+
+The ordinary forwarder captures the request method before sending it upstream.
+Responses to `HEAD` and `304 Not Modified` retain a nonzero hypothetical
+`Content-Length` without treating the absent body as truncation, while their
+body guard still permits zero streamed bytes. A `204 No Content` likewise
+permits no body, and any `Content-Length` or `Transfer-Encoding` on that status
+is rejected before downstream head release. `205 Reset Content` is also
+body-forbidden: an empty response or `Content-Length: 0` is accepted, a
+nonzero length or any `Transfer-Encoding` is rejected before release, and
+unframed malicious body bytes are dropped. Rejecting every transfer coding on
+`205`, including a nominally empty chunked message, avoids ambiguous
+stream/trailer framing on a status that must not carry content.
+
+The raw loopback body matrix first proves fragmented valid
+`Content-Length`, chunked, and close-delimited baselines plus bodyless `HEAD`
+and `304` baselines with nonzero hypothetical lengths, a bodyless `204`
+without framing, and a bodyless `205` with `Content-Length: 0`. Twenty-three
+negatives then cover truncated fixed-length bodies, invalid/overflowing chunk
+sizes, truncated chunks, missing delimiters or terminal chunks,
+malformed/protected/oversized/excess-count trailers, chunked and
+close-delimited streamed-limit overflow, forbidden framing or malicious bytes
+on `204` and `205`, and bytes after a terminal chunk or complete fixed-length
+response. Passing requires 6 exact pre-stream 502 responses, 12 bounded
+stream fail-closed terminations, 1 bounded empty close-delimited cutoff, 2
+bodyless malicious-status terminations, and 2 isolated safe first responses.
+All 30 first upstream requests must carry one valid synthetic `S`. The client
+also attempts a second authenticated request on every keep-alive downstream
+socket: all 30 sockets must physically close before proxy shutdown, no second
+response may arrive, and no attacker marker or reusable connection may
+result. The response-splitting and no-body fixtures deliberately omit an
+upstream `Connection: close` where applicable, so this proves proxy-enforced
+downstream closure rather than inherited upstream advice.
+
 ## Status
 
 This code is pre-release and `phase1_release_ready` remains false. Known
@@ -204,10 +252,9 @@ Phase 1 release gaps include:
   from disk after a native-process crash;
 - configured navigation, popup, download, custom-scheme, devtools, extension,
   and remote-debugging controls have not all been exercised end to end;
-- HTTP idle/body-rate and WebSocket byte-rate abuse gates, plus malformed and
-  truncated streamed-upstream-body handling, are not finished; WebSocket
-  activity-idle shutdown and strict malformed response-head rejection are
-  already tested.
+- HTTP idle/body-rate and WebSocket byte-rate abuse gates are not finished;
+  WebSocket activity-idle shutdown plus strict malformed response-head and
+  streamed body/trailer handling are tested.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

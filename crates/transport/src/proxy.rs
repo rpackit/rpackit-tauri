@@ -54,6 +54,7 @@ use crate::{
     admission::{self, RawAdmission},
     cookie,
     replay_io::ReplayIo,
+    response_body::ResponseBodyGuard,
     response_guard_io::ResponseGuardIo,
 };
 
@@ -766,8 +767,9 @@ async fn forward_http(
         return Err(Box::new(io::Error::other("proxy is shutting down")));
     }
     sender.ready().await?;
+    let request_method = request.method().clone();
     let response = timeout(state.limits.upstream_timeout, sender.send_request(request)).await??;
-    normalize_http_response(response, state)
+    normalize_http_response(response, &request_method, state)
 }
 
 fn normalize_http_request(
@@ -798,6 +800,7 @@ fn normalize_http_request(
 
 fn normalize_http_response(
     response: Response<Incoming>,
+    request_method: &Method,
     state: &ProxyState,
 ) -> Result<Response<ProxyBody>, BoxError> {
     if response.status().is_informational() {
@@ -806,6 +809,12 @@ fn normalize_http_response(
         )));
     }
     let (mut parts, body) = response.into_parts();
+    let body_policy = validate_response_body_head(
+        request_method,
+        parts.status,
+        &parts.headers,
+        state.limits.max_response_body_bytes,
+    )?;
     parts.version = Version::HTTP_11;
     strip_response_headers(&mut parts.headers)?;
     parts
@@ -813,8 +822,90 @@ fn normalize_http_response(
         .insert(CONNECTION, HeaderValue::from_static("close"));
     cookie::normalize_set_cookie_headers(&mut parts.headers, &state.upstream.ip().to_string())?;
     rewrite_location(&mut parts.headers, state)?;
-    let body = Limited::new(body, state.limits.max_response_body_bytes).boxed_unsync();
+    let body = match body_policy {
+        ResponseBodyPolicy::Streaming { declared_length } => ResponseBodyGuard::streaming(
+            body,
+            declared_length,
+            state.limits.max_response_body_bytes,
+        ),
+        ResponseBodyPolicy::Forbidden { advertised_length } => {
+            ResponseBodyGuard::forbidden(body, advertised_length)
+        }
+    }
+    .map_err(|error| -> BoxError { Box::new(error) })
+    .boxed_unsync();
     Ok(Response::from_parts(parts, body))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResponseBodyPolicy {
+    Streaming { declared_length: Option<u64> },
+    Forbidden { advertised_length: Option<u64> },
+}
+
+fn validate_response_body_head(
+    request_method: &Method,
+    status: StatusCode,
+    headers: &HeaderMap,
+    max_response_body_bytes: usize,
+) -> Result<ResponseBodyPolicy, BoxError> {
+    if headers.contains_key("trailer") {
+        return Err(Box::new(io::Error::other(
+            "upstream response trailers are unsupported",
+        )));
+    }
+    let values: Vec<&HeaderValue> = headers.get_all(CONTENT_LENGTH).iter().collect();
+    if values.len() > 1 {
+        return Err(Box::new(io::Error::other(
+            "ambiguous upstream response length",
+        )));
+    }
+    let declared_length = if let Some(value) = values.first() {
+        Some(
+            value
+                .to_str()?
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("invalid upstream response length"))?,
+        )
+    } else {
+        None
+    };
+
+    if status == StatusCode::NO_CONTENT
+        && (declared_length.is_some() || headers.contains_key(TRANSFER_ENCODING))
+    {
+        return Err(Box::new(io::Error::other(
+            "upstream no-content response used forbidden framing",
+        )));
+    }
+    if status == StatusCode::RESET_CONTENT
+        && (declared_length.is_some_and(|declared| declared != 0)
+            || headers.contains_key(TRANSFER_ENCODING))
+    {
+        return Err(Box::new(io::Error::other(
+            "upstream reset-content response used forbidden framing",
+        )));
+    }
+
+    if request_method == Method::HEAD
+        || matches!(
+            status,
+            StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+        )
+    {
+        return Ok(ResponseBodyPolicy::Forbidden {
+            advertised_length: declared_length,
+        });
+    }
+
+    if declared_length.is_some_and(|declared| {
+        declared > u64::try_from(max_response_body_bytes).unwrap_or(u64::MAX)
+    }) {
+        return Err(Box::new(io::Error::other(
+            "upstream response length exceeded limit",
+        )));
+    }
+    Ok(ResponseBodyPolicy::Streaming { declared_length })
 }
 
 async fn forward_websocket(
@@ -1410,6 +1501,127 @@ mod tests {
             HeaderValue::from_static("expected-accept"),
         );
         response
+    }
+
+    #[test]
+    fn response_body_head_rejects_declared_trailers_and_oversized_lengths() {
+        let mut declared_trailer = HeaderMap::new();
+        declared_trailer.insert("trailer", HeaderValue::from_static("X-Test"));
+        assert!(
+            validate_response_body_head(&Method::GET, StatusCode::OK, &declared_trailer, 1024)
+                .is_err()
+        );
+
+        let mut oversized = HeaderMap::new();
+        oversized.insert(CONTENT_LENGTH, HeaderValue::from_static("1025"));
+        assert!(
+            validate_response_body_head(&Method::GET, StatusCode::OK, &oversized, 1024).is_err()
+        );
+
+        let mut exact = HeaderMap::new();
+        exact.insert(CONTENT_LENGTH, HeaderValue::from_static("1024"));
+        assert_eq!(
+            validate_response_body_head(&Method::GET, StatusCode::OK, &exact, 1024).ok(),
+            Some(ResponseBodyPolicy::Streaming {
+                declared_length: Some(1024)
+            })
+        );
+    }
+
+    #[test]
+    fn response_body_head_models_head_not_modified_and_no_content_semantics() {
+        let mut hypothetical_length = HeaderMap::new();
+        hypothetical_length.insert(CONTENT_LENGTH, HeaderValue::from_static("4096"));
+
+        assert_eq!(
+            validate_response_body_head(&Method::HEAD, StatusCode::OK, &hypothetical_length, 8)
+                .ok(),
+            Some(ResponseBodyPolicy::Forbidden {
+                advertised_length: Some(4096)
+            })
+        );
+        assert_eq!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::NOT_MODIFIED,
+                &hypothetical_length,
+                8
+            )
+            .ok(),
+            Some(ResponseBodyPolicy::Forbidden {
+                advertised_length: Some(4096)
+            })
+        );
+        assert_eq!(
+            validate_response_body_head(&Method::GET, StatusCode::NO_CONTENT, &HeaderMap::new(), 8)
+                .ok(),
+            Some(ResponseBodyPolicy::Forbidden {
+                advertised_length: None
+            })
+        );
+
+        let mut no_content_length = HeaderMap::new();
+        no_content_length.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+        assert!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::NO_CONTENT,
+                &no_content_length,
+                8
+            )
+            .is_err()
+        );
+
+        let mut no_content_transfer_encoding = HeaderMap::new();
+        no_content_transfer_encoding.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+        assert!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::NO_CONTENT,
+                &no_content_transfer_encoding,
+                8
+            )
+            .is_err()
+        );
+
+        let mut reset_content_zero = HeaderMap::new();
+        reset_content_zero.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+        assert_eq!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::RESET_CONTENT,
+                &reset_content_zero,
+                8
+            )
+            .ok(),
+            Some(ResponseBodyPolicy::Forbidden {
+                advertised_length: Some(0)
+            })
+        );
+
+        let mut reset_content_nonzero = HeaderMap::new();
+        reset_content_nonzero.insert(CONTENT_LENGTH, HeaderValue::from_static("1"));
+        assert!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::RESET_CONTENT,
+                &reset_content_nonzero,
+                8
+            )
+            .is_err()
+        );
+
+        let mut reset_content_chunked = HeaderMap::new();
+        reset_content_chunked.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+        assert!(
+            validate_response_body_head(
+                &Method::GET,
+                StatusCode::RESET_CONTENT,
+                &reset_content_chunked,
+                8
+            )
+            .is_err()
+        );
     }
 
     #[test]
