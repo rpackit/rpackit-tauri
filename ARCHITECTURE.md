@@ -202,6 +202,64 @@ result. Unexpected bind errors fail the harness; only Windows `AddrInUse` or
 resolves that development-runtime gate; it does not imply Phase 1 readiness or
 certify the remaining fixed-runtime and browser matrices.
 
+## Malformed upstream response-head evidence
+
+The upstream socket is wrapped by a response guard before it is passed to
+Hyper. The guard buffers at most the configured response-header limit and
+releases no bytes until one complete response head passes strict raw checks:
+
+- every line uses CRLF and the response is HTTP/1.1 with an allowed final
+  status;
+- the configured header byte and field-count bounds hold;
+- when present, `Content-Length` is unique and decimal and
+  `Transfer-Encoding` is unique and exactly `chunked`; the two never coexist,
+  while responses that require neither remain valid;
+- ordinary HTTP forwarding rejects informational or switching responses,
+  while the WebSocket path permits `101` only for its later exact handshake
+  validation.
+
+Any read error before validation clears the retained prefix and permanently
+latches the guard closed; retrying the wrapper cannot resume or release those
+bytes.
+
+The existing structured normalization then rejects ambiguous `Connection` and
+`Location`, protected connection nominations, unsafe cookies, protected
+response fields, and any WebSocket response whose upgrade, accept,
+subprotocol, or extension fields do not exactly match the downstream offer.
+The testkit drives both layers through real loopback sockets and both
+forwarding paths:
+
+- a valid ordinary HTTP baseline and 16 HTTP negative heads;
+- a valid `101` baseline that tunnels one raw WebSocket frame and 16
+  WebSocket negative heads.
+
+The WebSocket server independently verifies that the proxy sent the normalized
+upgrade request and exactly one synthetic upstream credential. Parser-valid
+unsafe heads contain an attacker canary; every WebSocket negative also carries
+a valid attacker frame after its head. Passing requires every one of the 32
+negatives to become the exact locally generated `502`, no WebSocket negative
+to switch the downstream connection, all 34 upstream requests to have one
+valid synthetic credential, all 17 WebSocket requests to have the exact
+normalized upgrade shape, and zero canary/frame bytes downstream.
+
+The downstream server disables Hyper's automatic `Date` field. The fixed
+oracle therefore requires exactly `Cache-Control: no-store`,
+`Connection: close`, `Content-Length: 17`, and
+`Content-Type: text/plain; charset=utf-8`, followed by the exact
+`Upstream rejected` body; any upstream-derived or other unexpected header
+fails the gate. This evidence is part of `development_gates_passed` in the
+real WebView2 report. The recorded WebView2 `150.0.4078.99` report contains
+both passing baselines, 32/32 exact fixed `502` results, 34/34 valid synthetic
+upstream credentials, 17/17 normalized WebSocket requests, no downstream
+upgrade, and zero forwarded markers.
+
+The guard deliberately does not claim that all errors discovered after a
+response head has been released can be rewritten into a `502`. The remaining
+release work includes truncated fixed-length bodies, malformed chunks and
+trailers, and rate/idle behavior while a response body is streaming; those
+cases must prove bounded termination without response splitting or a reusable
+connection.
+
 ## Evidence and release boundary
 
 The headless suite proves deterministic negative cases and transport
@@ -214,9 +272,10 @@ A passing development report is not Phase 1 release readiness. The complete
 matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
 The remaining matrix also includes actual browser escape-path attempts, HTTP
-idle/body-rate and WebSocket byte-rate abuse, malformed upstream framing, and
-the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6 wildcard overlap,
-and WebSocket activity-idle shutdown are already tested on the development
+idle/body-rate and WebSocket byte-rate abuse, malformed streamed-upstream-body
+behavior, and the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6
+wildcard overlap, strict malformed upstream response-head rejection, and
+WebSocket activity-idle shutdown are already tested on the development
 environment. Protocol-2 R launcher ownership and Windows Job Objects are Phase
 2 work.
 

@@ -73,7 +73,7 @@ leakage using loopback-only mock services.
 Passing unit and headless integration tests does **not** establish browser
 cookie behavior. `apps/windows-spike` drives a real WebView2 instance and
 reports each empirical gate separately. The recorded development-runtime pass
-on WebView2 `150.0.4078.83` established:
+on WebView2 `150.0.4078.99` established:
 
 - the authenticated bootstrap, exact host-only/HttpOnly/Strict session cookie
   readback, application root, CSS, JavaScript, image, GET, unsafe POST,
@@ -165,6 +165,34 @@ credentials. On the recorded development run all three wildcard binds
 succeeded, all 32 exact-loopback requests returned `401`, and wildcard accepts
 remained zero.
 
+Malformed upstream response heads are a separate fail-closed development
+gate. Before Hyper receives any upstream response byte, the proxy requires
+strict CRLF framing, HTTP/1.1, and bounded header bytes and count. If framing
+fields are present, the response may have one decimal `Content-Length` or
+exactly `Transfer-Encoding: chunked`, never both. Ordinary HTTP rejects
+unsolicited protocol switches; the WebSocket path admits a raw `101` only for
+its exact structured handshake validation.
+
+The raw loopback attacker harness proves separate valid HTTP and WebSocket
+baselines, including one tunneled WebSocket frame. It then runs 16 ordinary
+HTTP variants and 16 WebSocket `101` variants. The ordinary matrix covers
+conflicting framing, unsupported transfer codings, lenient syntax, header
+limits, unsafe connection/redirect/cookie fields, and an unsolicited switch.
+The WebSocket matrix adds forbidden `101` framing, ambiguous or incorrect
+handshake fields, unoffered subprotocols, extensions, and a protected
+connection nomination. Every parser-valid unsafe head contains an attacker
+canary and every WebSocket negative includes a valid attacker frame.
+
+Passing requires all 32 negatives to become the exact static `502` header set
+and `Upstream rejected` body, with no downstream upgrade and no canary or frame
+bytes. Hyper's automatic `Date` field is disabled so locally generated
+rejections are byte-stable; unexpected headers fail the oracle. All 34
+upstream requests must carry one valid synthetic `S`, and all 17 WebSocket
+requests must also have the exact normalized upstream upgrade shape. The
+recorded WebView2 `150.0.4078.99` run passed both baselines, all 32 negatives,
+34/34 synthetic credentials, 17/17 normalized WebSocket requests, zero
+downstream upgrades, and zero forwarded markers.
+
 ## Status
 
 This code is pre-release and `phase1_release_ready` remains false. Known
@@ -176,9 +204,10 @@ Phase 1 release gaps include:
   from disk after a native-process crash;
 - configured navigation, popup, download, custom-scheme, devtools, extension,
   and remote-debugging controls have not all been exercised end to end;
-- HTTP idle/body-rate and WebSocket byte-rate abuse gates, plus the complete
-  malformed-upstream matrix, are not finished; WebSocket activity-idle
-  shutdown is already tested.
+- HTTP idle/body-rate and WebSocket byte-rate abuse gates, plus malformed and
+  truncated streamed-upstream-body handling, are not finished; WebSocket
+  activity-idle shutdown and strict malformed response-head rejection are
+  already tested.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

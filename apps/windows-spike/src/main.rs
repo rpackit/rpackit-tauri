@@ -19,7 +19,10 @@ use report::{AcceptanceReport, CookieEvidence, DevelopmentGates, write_failure_r
 use rpackit_transport::{
     HostResolution, ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, TransportSecrets,
 };
-use rpackit_transport_testkit::{ExternalCollector, MockUpstream, probe_listener_overlap};
+use rpackit_transport_testkit::{
+    ExternalCollector, MockUpstream, probe_listener_overlap,
+    probe_malformed_upstream_response_heads,
+};
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
     webview::{
@@ -106,6 +109,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let process_environment_secret_free = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let process_arguments_secret_free = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
+    let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let secrets = TransportSecrets::generate()?;
     let collector = ExternalCollector::start().await?;
     let upstream = MockUpstream::start(secrets.upstream(), collector.address()).await?;
@@ -176,6 +180,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let gates = DevelopmentGates::evaluate(
         &resolution,
         &listener_overlap,
+        &malformed_upstream,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -190,6 +195,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         tauri::webview_version().ok(),
         resolution,
         listener_overlap,
+        malformed_upstream,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

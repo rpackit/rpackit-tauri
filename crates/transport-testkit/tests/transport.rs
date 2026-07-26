@@ -19,7 +19,9 @@ use rpackit_transport::{
 };
 #[cfg(windows)]
 use rpackit_transport_testkit::probe_listener_overlap;
-use rpackit_transport_testkit::{ExternalCollector, MockUpstream};
+use rpackit_transport_testkit::{
+    ExternalCollector, MockUpstream, probe_malformed_upstream_response_heads,
+};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -735,6 +737,45 @@ async fn shutdown_drains_partial_http_and_websocket_before_returning() -> Result
 
     upstream.shutdown().await?;
     collector.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_upstream_response_heads_fail_closed() -> Result<(), TestError> {
+    let evidence = probe_malformed_upstream_response_heads().await?;
+
+    assert!(evidence.probe_completed, "{evidence:#?}");
+    assert!(evidence.valid_baseline_passed, "{evidence:#?}");
+    assert!(evidence.valid_websocket_baseline_passed, "{evidence:#?}");
+    assert_eq!(evidence.http_cases_attempted, 16, "{evidence:#?}");
+    assert_eq!(evidence.http_fail_closed_responses, 16, "{evidence:#?}");
+    assert_eq!(evidence.websocket_cases_attempted, 16, "{evidence:#?}");
+    assert_eq!(
+        evidence.websocket_fail_closed_responses, 16,
+        "{evidence:#?}"
+    );
+    assert_eq!(evidence.cases_attempted, 32, "{evidence:#?}");
+    assert_eq!(
+        evidence.fail_closed_responses, evidence.cases_attempted,
+        "{evidence:#?}"
+    );
+    assert_eq!(
+        evidence.upstream_requests_with_valid_secret,
+        evidence.cases_attempted + 2
+    );
+    assert_eq!(
+        evidence.upstream_websocket_requests_valid,
+        evidence.websocket_cases_attempted + 1
+    );
+    assert_eq!(evidence.unexpected_downstream_upgrades, 0, "{evidence:#?}");
+    assert_eq!(evidence.attacker_markers_forwarded, 0, "{evidence:#?}");
+    assert_eq!(evidence.cases.len(), evidence.cases_attempted as usize);
+    assert!(
+        evidence.cases.values().all(|passed| *passed),
+        "{evidence:#?}"
+    );
+    assert!(evidence.all_response_heads_fail_closed(), "{evidence:#?}");
+
     Ok(())
 }
 

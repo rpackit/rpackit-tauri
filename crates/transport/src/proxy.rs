@@ -54,6 +54,7 @@ use crate::{
     admission::{self, RawAdmission},
     cookie,
     replay_io::ReplayIo,
+    response_guard_io::ResponseGuardIo,
 };
 
 /// Reserved native proxy-session cookie name.
@@ -561,6 +562,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<ProxyState>) {
     builder
         .keep_alive(true)
         .half_close(false)
+        .auto_date_header(false)
         .max_headers(state.limits.max_headers)
         .max_buf_size(state.limits.max_header_bytes.max(8 * 1024))
         .timer(TokioTimer::new())
@@ -742,7 +744,12 @@ async fn forward_http(
         TcpStream::connect(state.upstream),
     )
     .await??;
-    let io = TokioIo::new(stream);
+    let io = TokioIo::new(ResponseGuardIo::new(
+        stream,
+        state.limits.max_header_bytes,
+        state.limits.max_headers,
+        false,
+    ));
     let mut client = client_http1::Builder::new();
     client
         .allow_spaces_after_header_name_in_responses(false)
@@ -793,6 +800,11 @@ fn normalize_http_response(
     response: Response<Incoming>,
     state: &ProxyState,
 ) -> Result<Response<ProxyBody>, BoxError> {
+    if response.status().is_informational() {
+        return Err(Box::new(io::Error::other(
+            "unexpected informational upstream response",
+        )));
+    }
     let (mut parts, body) = response.into_parts();
     parts.version = Version::HTTP_11;
     strip_response_headers(&mut parts.headers)?;
@@ -819,7 +831,12 @@ async fn forward_websocket(
         TcpStream::connect(state.upstream),
     )
     .await??;
-    let io = TokioIo::new(stream);
+    let io = TokioIo::new(ResponseGuardIo::new(
+        stream,
+        state.limits.max_header_bytes,
+        state.limits.max_headers,
+        true,
+    ));
     let (mut sender, connection) = client_http1::Builder::new()
         .handshake::<_, ProxyBody>(io)
         .await?;

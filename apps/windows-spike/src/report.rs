@@ -4,7 +4,8 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 
 use rpackit_transport::HostResolution;
 use rpackit_transport_testkit::{
-    BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, UpstreamSnapshot,
+    BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, MalformedUpstreamEvidence,
+    UpstreamSnapshot,
 };
 use serde::Serialize;
 
@@ -40,6 +41,7 @@ pub struct DevelopmentGates {
     pub system_resolver_has_no_nonloopback_answer: bool,
     pub webview_random_hostname_reached_loopback: bool,
     pub windows_listener_overlap_all_variants_pass: bool,
+    pub malformed_upstream_response_heads_fail_closed: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -68,6 +70,7 @@ impl DevelopmentGates {
     pub fn evaluate(
         resolution: &HostResolution,
         listener_overlap: &ListenerOverlapEvidence,
+        malformed_upstream: &MalformedUpstreamEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -87,6 +90,8 @@ impl DevelopmentGates {
             webview_random_hostname_reached_loopback: cookie.bootstrap_finished,
             windows_listener_overlap_all_variants_pass: listener_overlap
                 .all_variants_prove_exact_proxy_ownership(),
+            malformed_upstream_response_heads_fail_closed: malformed_upstream
+                .all_response_heads_fail_closed(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -142,6 +147,7 @@ impl DevelopmentGates {
             self.system_resolver_has_no_nonloopback_answer,
             self.webview_random_hostname_reached_loopback,
             self.windows_listener_overlap_all_variants_pass,
+            self.malformed_upstream_response_heads_fail_closed,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -177,6 +183,7 @@ pub struct AcceptanceReport {
     pub webview2_runtime: Option<String>,
     pub hostname_resolution: ResolutionReport,
     pub listener_overlap: ListenerOverlapEvidence,
+    pub malformed_upstream_response_heads: MalformedUpstreamEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -193,6 +200,7 @@ impl AcceptanceReport {
         webview2_runtime: Option<String>,
         resolution: HostResolution,
         listener_overlap: ListenerOverlapEvidence,
+        malformed_upstream_response_heads: MalformedUpstreamEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -218,8 +226,8 @@ impl AcceptanceReport {
                 "HTTP idle/body-rate and WebSocket byte-rate abuse gates are not yet complete; WebSocket activity-idle shutdown is tested",
             ),
             (
-                "negative_transport_matrix",
-                "the complete malformed upstream framing and browser escape matrix has not yet run across every supported runtime",
+                "malformed_upstream_body_matrix",
+                "strict HTTP and WebSocket response-head rejection is proven separately; truncated and malformed streamed-body framing still needs its complete matrix",
             ),
         ]);
         if !listener_overlap.all_variants_prove_exact_proxy_ownership() {
@@ -235,6 +243,7 @@ impl AcceptanceReport {
             webview2_runtime,
             hostname_resolution: ResolutionReport::from(resolution),
             listener_overlap,
+            malformed_upstream_response_heads,
             cookie,
             browser,
             upstream,
@@ -302,6 +311,8 @@ pub fn write_failure_report(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use rpackit_transport_testkit::{
         ListenerDualStackOverlapEvidence, ListenerFamilyOverlapEvidence,
     };
@@ -309,10 +320,18 @@ mod tests {
     use super::*;
 
     fn report(listener_overlap: ListenerOverlapEvidence) -> AcceptanceReport {
+        report_with_malformed(listener_overlap, MalformedUpstreamEvidence::default())
+    }
+
+    fn report_with_malformed(
+        listener_overlap: ListenerOverlapEvidence,
+        malformed_upstream: MalformedUpstreamEvidence,
+    ) -> AcceptanceReport {
         AcceptanceReport::new(
             None,
             HostResolution::Unavailable,
             listener_overlap,
+            malformed_upstream,
             CookieEvidence::default(),
             BrowserReport::default(),
             UpstreamSnapshot::default(),
@@ -378,5 +397,96 @@ mod tests {
                 .contains_key("listener_overlap_matrix")
         );
         assert!(!proven.phase1_release_ready);
+    }
+
+    #[test]
+    fn malformed_response_counts_are_reported_without_claiming_release_readiness() {
+        let cases = [
+            "conflicting_content_length",
+            "content_length_and_transfer_encoding",
+            "unsupported_transfer_encoding",
+            "chunked_not_final",
+            "obsolete_header_folding",
+            "whitespace_before_colon",
+            "invalid_header_name",
+            "bare_line_feeds",
+            "invalid_status_code",
+            "oversized_response_head",
+            "too_many_headers",
+            "duplicate_connection",
+            "protected_connection_nomination",
+            "ambiguous_location",
+            "reserved_proxy_cookie",
+            "unsolicited_protocol_switch",
+            "websocket_bare_line_feeds",
+            "websocket_conflicting_content_length",
+            "websocket_oversized_response_head",
+            "websocket_too_many_headers",
+            "websocket_content_length",
+            "websocket_transfer_encoding",
+            "websocket_duplicate_connection",
+            "websocket_duplicate_upgrade",
+            "websocket_wrong_upgrade",
+            "websocket_missing_accept",
+            "websocket_wrong_accept",
+            "websocket_duplicate_accept",
+            "websocket_unoffered_protocol",
+            "websocket_duplicate_protocol",
+            "websocket_unsolicited_extensions",
+            "websocket_protected_connection_nomination",
+        ]
+        .into_iter()
+        .map(|name| (name.to_owned(), true))
+        .collect::<BTreeMap<_, _>>();
+        let evidence = MalformedUpstreamEvidence {
+            valid_baseline_passed: true,
+            valid_websocket_baseline_passed: true,
+            http_cases_attempted: 16,
+            http_fail_closed_responses: 16,
+            websocket_cases_attempted: 16,
+            websocket_fail_closed_responses: 16,
+            cases_attempted: 32,
+            fail_closed_responses: 32,
+            upstream_requests_with_valid_secret: 34,
+            upstream_websocket_requests_valid: 17,
+            unexpected_downstream_upgrades: 0,
+            attacker_markers_forwarded: 0,
+            cases,
+            probe_completed: true,
+        };
+        assert!(evidence.all_response_heads_fail_closed());
+
+        let gates = DevelopmentGates::evaluate(
+            &HostResolution::Unavailable,
+            &ListenerOverlapEvidence::default(),
+            &evidence,
+            &CookieEvidence::default(),
+            &BrowserReport::default(),
+            &UpstreamSnapshot::default(),
+            &CollectorSnapshot::default(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(gates.malformed_upstream_response_heads_fail_closed);
+
+        let report = report_with_malformed(ListenerOverlapEvidence::default(), evidence);
+        let serialized = serde_json::to_string(&report).unwrap_or_default();
+        assert!(serialized.contains("\"http_cases_attempted\":16"));
+        assert!(serialized.contains("\"websocket_cases_attempted\":16"));
+        assert!(serialized.contains("\"cases_attempted\":32"));
+        assert!(serialized.contains("\"fail_closed_responses\":32"));
+        assert!(serialized.contains("\"upstream_requests_with_valid_secret\":34"));
+        assert!(serialized.contains("\"upstream_websocket_requests_valid\":17"));
+        assert!(serialized.contains("\"unexpected_downstream_upgrades\":0"));
+        assert!(!serialized.contains("rp-"));
+        assert!(
+            report
+                .unproven_release_gates
+                .contains_key("malformed_upstream_body_matrix")
+        );
+        assert!(!report.phase1_release_ready);
     }
 }
