@@ -1,0 +1,69 @@
+name: Native transport CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-transport-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+      - name: Clippy core
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test core
+        run: cargo test --locked
+
+  windows-shell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - name: Compile full workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Clippy full workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test full workspace
+        run: cargo test --workspace --locked
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build shell without installer
+        working-directory: apps/windows-spike
+        run: cargo tauri build --no-bundle
+      - name: Run WebView2 development-runtime gates
+        shell: powershell
+        run: |
+          .\tests\run-webview2.ps1 `
+            -ReportPath "$env:RUNNER_TEMP\rpackit-webview2-report.json"
+      - name: Upload secret-free WebView2 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: webview2-development-runtime-evidence
+          path: ${{ runner.temp }}\rpackit-webview2-report.json
+          if-no-files-found: warn

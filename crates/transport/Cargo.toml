@@ -1,0 +1,38 @@
+[package]
+name = "rpackit-transport"
+description = "Authenticated loopback reverse transport for native rpackit applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+httparse.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+percent-encoding.workspace = true
+sha1.workspace = true
+socket2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "rpackit-windows-spike"
+description = "Real WebView2 acceptance shell for the rpackit secure transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+cookie.workspace = true
+rpackit-transport = { path = "../../crates/transport" }
+rpackit-transport-testkit = { path = "../../crates/transport-testkit" }
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+url.workspace = true
+webview2-com.workspace = true
+windows.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

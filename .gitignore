@@ -1,0 +1,10 @@
+/target/
+**/target/
+**/.tauri/
+**/gen/
+*.pdb
+*.ilk
+*.dmp
+*.log
+.DS_Store
+Thumbs.db

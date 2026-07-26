@@ -1,0 +1,60 @@
+[workspace]
+members = [
+  "apps/windows-spike",
+  "crates/transport",
+  "crates/transport-testkit",
+]
+default-members = [
+  "crates/transport",
+  "crates/transport-testkit",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT"
+repository = "https://github.com/rpackit/rpackit-tauri"
+
+[workspace.dependencies]
+base64 = "=0.23.0"
+bytes = "=1.12.1"
+cookie = "=0.18.1"
+futures-util = "=0.3.31"
+getrandom = "=0.4.3"
+hex = "=0.4.3"
+http = "=1.4.2"
+http-body = "=1.0.1"
+http-body-util = "=0.1.3"
+httparse = "=1.10.1"
+hyper = { version = "=1.8.1", features = ["client", "http1", "server"] }
+hyper-tungstenite = "=0.30.0"
+hyper-util = { version = "=0.1.20", features = ["client", "http1", "server", "tokio"] }
+percent-encoding = "=2.3.2"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha1 = "=0.11.0"
+socket2 = { version = "=0.6.5", features = ["all"] }
+subtle = "=2.6.1"
+tauri = { version = "=2.11.5", default-features = false, features = ["common-controls-v6", "wry"] }
+tauri-build = "=2.6.3"
+tempfile = "=3.27.0"
+thiserror = "=2.0.19"
+tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "=0.30.0"
+url = "=2.5.8"
+webview2-com = "=0.38.2"
+windows = { version = "=0.61.3", features = ["Win32_System_Com"] }
+zeroize = { version = "=1.9.0", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
