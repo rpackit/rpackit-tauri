@@ -19,7 +19,7 @@ use report::{AcceptanceReport, CookieEvidence, DevelopmentGates, write_failure_r
 use rpackit_transport::{
     HostResolution, ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, TransportSecrets,
 };
-use rpackit_transport_testkit::{ExternalCollector, MockUpstream};
+use rpackit_transport_testkit::{ExternalCollector, MockUpstream, probe_listener_overlap};
 use tauri::{
     AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
     webview::{
@@ -121,6 +121,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         Ordering::Relaxed,
     );
 
+    let listener_overlap = probe_listener_overlap(&proxy).await?;
     let resolution = proxy.resolve_hostname().await;
     if !resolution_allows_webview(&resolution) {
         return Err(
@@ -174,6 +175,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
 
     let gates = DevelopmentGates::evaluate(
         &resolution,
+        &listener_overlap,
         &cookie_evidence,
         &browser_report,
         &upstream_snapshot,
@@ -187,6 +189,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let report = AcceptanceReport::new(
         tauri::webview_version().ok(),
         resolution,
+        listener_overlap,
         cookie_evidence,
         browser_report,
         upstream_snapshot,

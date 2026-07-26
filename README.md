@@ -153,6 +153,18 @@ The harness exits nonzero when a required gate fails and writes only a
 secret-free JSON report to a caller-selected temporary path. No report,
 runtime profile, or build product belongs in Git.
 
+Listener ownership is a measured Windows development gate. After the proxy
+owns exact IPv4 and IPv6 loopback addresses, the harness tries three same-port
+`SO_REUSEADDR` contenders: IPv4 wildcard, IPv6 v6-only wildcard, and IPv6
+dual-stack wildcard. The dual-stack contender stays alive while both exact
+IPv4 and exact IPv6 are tested. Every one of the four traffic paths receives
+eight real requests. A wildcard bind may succeed; the gate passes only when
+all 32 requests receive the proxy's expected `401` and all wildcard listeners
+accept zero connections. Bind outcomes and counts are recorded without
+credentials. On the recorded development run all three wildcard binds
+succeeded, all 32 exact-loopback requests returned `401`, and wildcard accepts
+remained zero.
+
 ## Status
 
 This code is pre-release and `phase1_release_ready` remains false. Known
@@ -166,9 +178,7 @@ Phase 1 release gaps include:
   and remote-debugging controls have not all been exercised end to end;
 - HTTP idle/body-rate and WebSocket byte-rate abuse gates, plus the complete
   malformed-upstream matrix, are not finished; WebSocket activity-idle
-  shutdown is already tested;
-- Windows rejects exact-address listener takeover, but wildcard overlap is
-  still an explicit unresolved release gate.
+  shutdown is already tested.
 
 A development-runtime pass cannot substitute for the complete matrix.
 Protocol-2 R

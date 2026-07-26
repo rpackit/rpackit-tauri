@@ -17,6 +17,8 @@ use rpackit_transport::{
     BOOTSTRAP_HEADER_NAME, HostResolution, ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, Secret,
     TransportLimits, TransportSecrets,
 };
+#[cfg(windows)]
+use rpackit_transport_testkit::probe_listener_overlap;
 use rpackit_transport_testkit::{ExternalCollector, MockUpstream};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -734,4 +736,41 @@ async fn shutdown_drains_partial_http_and_websocket_before_returning() -> Result
     upstream.shutdown().await?;
     collector.shutdown().await?;
     Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_wildcard_overlap_never_receives_exact_loopback_traffic() -> Result<(), TestError> {
+    let fixture = Fixture::start(9).await?;
+    let evidence = probe_listener_overlap(&fixture.proxy).await?;
+
+    assert!(evidence.windows_probe_completed);
+    for family in [&evidence.ipv4_wildcard, &evidence.ipv6_v6_only_wildcard] {
+        assert!(family.probe_completed);
+        assert_eq!(family.requests_attempted, 8);
+        assert_eq!(
+            family.proxy_unauthorized_responses,
+            family.requests_attempted
+        );
+        assert_eq!(family.wildcard_accepts, 0);
+        assert!(family.exact_proxy_won);
+    }
+    let dual_stack = &evidence.ipv6_dual_stack_wildcard;
+    assert!(dual_stack.probe_completed);
+    assert_eq!(dual_stack.ipv4_requests_attempted, 8);
+    assert_eq!(
+        dual_stack.ipv4_proxy_unauthorized_responses,
+        dual_stack.ipv4_requests_attempted
+    );
+    assert_eq!(dual_stack.ipv6_requests_attempted, 8);
+    assert_eq!(
+        dual_stack.ipv6_proxy_unauthorized_responses,
+        dual_stack.ipv6_requests_attempted
+    );
+    assert_eq!(dual_stack.wildcard_accepts, 0);
+    assert!(dual_stack.exact_proxies_won);
+    assert!(evidence.all_variants_prove_exact_proxy_ownership());
+    assert_eq!(fixture.upstream.snapshot().await.connections, 0);
+
+    fixture.shutdown().await
 }

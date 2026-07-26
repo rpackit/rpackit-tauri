@@ -17,7 +17,7 @@ supported installer, or implementation of protocol-2 R process ownership.
 | Component | Responsibility | Must not own |
 | --- | --- | --- |
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
-| `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, secret-free counters and reports | External network, real credentials, release claims |
+| `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts the real WebView2 harness and rejects a failed development gate | Fixed-runtime certification or installer validation |
 
@@ -37,7 +37,8 @@ fresh hostname is required even when every proxy uses an ephemeral port.
 The proxy owns compatible IPv4 and IPv6 loopback listeners and rejects a
 non-loopback peer, an incorrect `Host`, an absolute or authority-form target,
 ambiguous framing, protected `Connection` tokens, unsupported upgrades, and
-other malformed admission before application forwarding.
+other malformed admission before application forwarding. Windows listeners
+request `SO_EXCLUSIVEADDRUSE` before bind.
 
 ## Bootstrap sequence
 
@@ -166,6 +167,41 @@ additional runtime evidence that WebView2 reached the loopback endpoint. It is
 not a claim that all Windows resolver APIs support arbitrary `.localhost`
 subdomains. The architecture provides no stable-host fallback.
 
+## Listener ownership evidence
+
+Windows exact-address exclusivity and wildcard overlap are separate
+observations. After the proxy binds exact IPv4 and IPv6 loopback addresses, the
+testkit creates three same-port `SO_REUSEADDR` contenders: IPv4 wildcard, IPv6
+v6-only wildcard, and IPv6 dual-stack wildcard. Windows may reject a wildcard
+bind or permit it while still excluding the exact interface, as described in
+Microsoft's
+[`SO_REUSEADDR` and `SO_EXCLUSIVEADDRUSE` binding matrix](https://learn.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse).
+Wildcard bind success alone is therefore not a failed gate.
+
+The IPv4 wildcard is tested against exact IPv4, and the IPv6 v6-only wildcard
+against exact IPv6. The same dual-stack contender remains alive while the
+probe tests exact IPv4 and then exact IPv6. Each of those four traffic paths
+receives eight real, credential-free requests with the proxy's exact `Host`.
+The request omits `P`, so only the proxy can return the expected fixed `401`;
+the mock upstream must remain untouched. A variant passes only when every raw
+per-target counter is 8/8 and its wildcard listener accepts zero connections.
+The acceptance report records every bind outcome and raw counter without
+recording any credential.
+
+On the recorded development run all three wildcard binds succeeded. Exact
+IPv4 under the IPv4 contender, exact IPv6 under the v6-only contender, and both
+exact targets under the single dual-stack contender each returned 8/8 proxy
+`401` responses. All three wildcard accept counts remained zero, for 32 total
+exact-loopback requests.
+
+`windows_listener_overlap_all_variants_pass` requires all three contenders and
+all four traffic paths to pass from their raw counters. The report removes
+`listener_overlap_matrix` from `unproven_release_gates` only for that measured
+result. Unexpected bind errors fail the harness; only Windows `AddrInUse` or
+`PermissionDenied` is recorded as an ordinary rejected contender. This
+resolves that development-runtime gate; it does not imply Phase 1 readiness or
+certify the remaining fixed-runtime and browser matrices.
+
 ## Evidence and release boundary
 
 The headless suite proves deterministic negative cases and transport
@@ -179,9 +215,10 @@ matrix must still pass on a reviewed fixed minimum WebView2 runtime, and a
 forced native-process crash must prove that the profile cannot recover `P`.
 The remaining matrix also includes actual browser escape-path attempts, HTTP
 idle/body-rate and WebSocket byte-rate abuse, malformed upstream framing, and
-the known Windows wildcard-listener overlap case; exact-address takeover and
-WebSocket activity-idle shutdown are already tested. Protocol-2 R launcher
-ownership and Windows Job Objects are Phase 2 work.
+the fixed-minimum runtime. Exact-address takeover, IPv4/IPv6 wildcard overlap,
+and WebSocket activity-idle shutdown are already tested on the development
+environment. Protocol-2 R launcher ownership and Windows Job Objects are Phase
+2 work.
 
 ## Maintainer rules
 

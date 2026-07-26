@@ -3,7 +3,9 @@
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 use rpackit_transport::HostResolution;
-use rpackit_transport_testkit::{BrowserReport, CollectorSnapshot, UpstreamSnapshot};
+use rpackit_transport_testkit::{
+    BrowserReport, CollectorSnapshot, ListenerOverlapEvidence, UpstreamSnapshot,
+};
 use serde::Serialize;
 
 /// Native cookie evidence. No credential value is retained.
@@ -37,6 +39,7 @@ pub struct CookieEvidence {
 pub struct DevelopmentGates {
     pub system_resolver_has_no_nonloopback_answer: bool,
     pub webview_random_hostname_reached_loopback: bool,
+    pub windows_listener_overlap_all_variants_pass: bool,
     pub webview_random_hostname_loaded: bool,
     pub native_cookie_set_and_read_back: bool,
     pub cookie_flags_exact: bool,
@@ -64,6 +67,7 @@ impl DevelopmentGates {
     #[allow(clippy::fn_params_excessive_bools)]
     pub fn evaluate(
         resolution: &HostResolution,
+        listener_overlap: &ListenerOverlapEvidence,
         cookie: &CookieEvidence,
         browser: &BrowserReport,
         upstream: &UpstreamSnapshot,
@@ -81,6 +85,8 @@ impl DevelopmentGates {
                 HostResolution::NonLoopback(_)
             ),
             webview_random_hostname_reached_loopback: cookie.bootstrap_finished,
+            windows_listener_overlap_all_variants_pass: listener_overlap
+                .all_variants_prove_exact_proxy_ownership(),
             webview_random_hostname_loaded: cookie.bootstrap_finished
                 && cookie.authenticated_root_finished
                 && cookie.browser_report_received,
@@ -135,6 +141,7 @@ impl DevelopmentGates {
         [
             self.system_resolver_has_no_nonloopback_answer,
             self.webview_random_hostname_reached_loopback,
+            self.windows_listener_overlap_all_variants_pass,
             self.webview_random_hostname_loaded,
             self.native_cookie_set_and_read_back,
             self.cookie_flags_exact,
@@ -169,6 +176,7 @@ pub struct AcceptanceReport {
     pub platform: &'static str,
     pub webview2_runtime: Option<String>,
     pub hostname_resolution: ResolutionReport,
+    pub listener_overlap: ListenerOverlapEvidence,
     pub cookie: CookieEvidence,
     pub browser: BrowserReport,
     pub upstream: UpstreamSnapshot,
@@ -184,6 +192,7 @@ impl AcceptanceReport {
     pub fn new(
         webview2_runtime: Option<String>,
         resolution: HostResolution,
+        listener_overlap: ListenerOverlapEvidence,
         cookie: CookieEvidence,
         browser: BrowserReport,
         upstream: UpstreamSnapshot,
@@ -191,7 +200,7 @@ impl AcceptanceReport {
         gates: DevelopmentGates,
     ) -> Self {
         let development_gates_passed = gates.all_pass();
-        let unproven_release_gates = BTreeMap::from([
+        let mut unproven_release_gates = BTreeMap::from([
             (
                 "fixed_minimum_webview2",
                 "the complete matrix has not run against a reviewed fixed minimum runtime",
@@ -209,20 +218,23 @@ impl AcceptanceReport {
                 "HTTP idle/body-rate and WebSocket byte-rate abuse gates are not yet complete; WebSocket activity-idle shutdown is tested",
             ),
             (
-                "listener_overlap_matrix",
-                "exact-address takeover is rejected, but Windows wildcard overlap remains an explicit unresolved release gate",
-            ),
-            (
                 "negative_transport_matrix",
                 "the complete malformed upstream framing and browser escape matrix has not yet run across every supported runtime",
             ),
         ]);
+        if !listener_overlap.all_variants_prove_exact_proxy_ownership() {
+            unproven_release_gates.insert(
+                "listener_overlap_matrix",
+                "IPv4 wildcard, IPv6 v6-only wildcard, and IPv6 dual-stack wildcard traffic to both exact listeners have not all proven exact-proxy ownership with zero wildcard accepts",
+            );
+        }
         Self {
             transport_contract_version: 2,
             harness_version: env!("CARGO_PKG_VERSION"),
             platform: std::env::consts::OS,
             webview2_runtime,
             hostname_resolution: ResolutionReport::from(resolution),
+            listener_overlap,
             cookie,
             browser,
             upstream,
@@ -286,4 +298,85 @@ pub fn write_failure_report(path: &Path) -> io::Result<()> {
         path,
         b"{\n  \"transport_contract_version\": 2,\n  \"development_gates_passed\": false,\n  \"phase1_release_ready\": false,\n  \"failure\": \"harness failed before producing acceptance evidence\"\n}\n",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use rpackit_transport_testkit::{
+        ListenerDualStackOverlapEvidence, ListenerFamilyOverlapEvidence,
+    };
+
+    use super::*;
+
+    fn report(listener_overlap: ListenerOverlapEvidence) -> AcceptanceReport {
+        AcceptanceReport::new(
+            None,
+            HostResolution::Unavailable,
+            listener_overlap,
+            CookieEvidence::default(),
+            BrowserReport::default(),
+            UpstreamSnapshot::default(),
+            CollectorSnapshot::default(),
+            DevelopmentGates::default(),
+        )
+    }
+
+    fn passing_family() -> ListenerFamilyOverlapEvidence {
+        ListenerFamilyOverlapEvidence {
+            wildcard_bind_succeeded: true,
+            requests_attempted: 8,
+            proxy_unauthorized_responses: 8,
+            wildcard_accepts: 0,
+            probe_completed: true,
+            exact_proxy_won: true,
+        }
+    }
+
+    fn passing_dual_stack() -> ListenerDualStackOverlapEvidence {
+        ListenerDualStackOverlapEvidence {
+            wildcard_bind_succeeded: true,
+            ipv4_requests_attempted: 8,
+            ipv4_proxy_unauthorized_responses: 8,
+            ipv6_requests_attempted: 8,
+            ipv6_proxy_unauthorized_responses: 8,
+            wildcard_accepts: 0,
+            probe_completed: true,
+            exact_proxies_won: true,
+        }
+    }
+
+    #[test]
+    fn listener_overlap_gap_is_removed_only_after_every_variant_passes() {
+        let unproven = report(ListenerOverlapEvidence::default());
+        assert!(
+            unproven
+                .unproven_release_gates
+                .contains_key("listener_overlap_matrix")
+        );
+
+        let missing_dual_stack = report(ListenerOverlapEvidence {
+            windows_probe_completed: true,
+            ipv4_wildcard: passing_family(),
+            ipv6_v6_only_wildcard: passing_family(),
+            ipv6_dual_stack_wildcard: ListenerDualStackOverlapEvidence::default(),
+        });
+        assert!(
+            missing_dual_stack
+                .unproven_release_gates
+                .contains_key("listener_overlap_matrix")
+        );
+
+        let proven = report(ListenerOverlapEvidence {
+            windows_probe_completed: true,
+            ipv4_wildcard: passing_family(),
+            ipv6_v6_only_wildcard: passing_family(),
+            ipv6_dual_stack_wildcard: passing_dual_stack(),
+        });
+        assert!(
+            !proven
+                .unproven_release_gates
+                .contains_key("listener_overlap_matrix")
+        );
+        assert!(!proven.phase1_release_ready);
+    }
 }

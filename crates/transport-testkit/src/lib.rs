@@ -28,7 +28,7 @@ use http_body_util::{BodyExt as _, Full, StreamBody, combinators::UnsyncBoxBody}
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
 use hyper_util::rt::TokioIo;
-use rpackit_transport::{SESSION_COOKIE_NAME, Secret};
+use rpackit_transport::{RunningProxy, SESSION_COOKIE_NAME, Secret};
 use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
@@ -36,8 +36,22 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[cfg(windows)]
+use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(windows)]
+use std::{net::Ipv6Addr, time::Duration};
+#[cfg(windows)]
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::TcpStream,
+    sync::oneshot,
+    time::timeout,
+};
+
 type BoxError = Box<dyn StdError + Send + Sync>;
 type TestBody = UnsyncBoxBody<Bytes, BoxError>;
+
+const LISTENER_OVERLAP_REQUESTS: u32 = 8;
 
 /// Boolean-only browser acceptance report submitted by the mock application.
 ///
@@ -113,6 +127,357 @@ pub struct CollectorSnapshot {
     pub external_redirect_requests: u64,
     /// Requests made to a child of the random proxy hostname.
     pub child_host_requests: u64,
+}
+
+/// Secret-free evidence for one single-stack wildcard-listener overlap probe.
+#[derive(Clone, Debug, Default, Serialize, Eq, PartialEq)]
+pub struct ListenerFamilyOverlapEvidence {
+    /// Whether `SO_REUSEADDR` allowed the wildcard listener to bind.
+    ///
+    /// A successful wildcard bind is evidence, not a failed gate by itself.
+    pub wildcard_bind_succeeded: bool,
+    /// Number of real requests attempted against the exact loopback address.
+    pub requests_attempted: u32,
+    /// Requests for which the exact proxy returned its expected `401`.
+    pub proxy_unauthorized_responses: u32,
+    /// Connections accepted by the wildcard listener.
+    pub wildcard_accepts: u64,
+    /// Whether the probe ran to completion.
+    pub probe_completed: bool,
+    /// Whether every request reached the exact proxy and none reached the
+    /// wildcard listener.
+    pub exact_proxy_won: bool,
+}
+
+impl ListenerFamilyOverlapEvidence {
+    /// Return true only when the recorded result and its raw counters prove
+    /// the full repeated-request invariant.
+    #[must_use]
+    pub const fn proves_exact_proxy_ownership(&self) -> bool {
+        self.probe_completed
+            && self.requests_attempted == LISTENER_OVERLAP_REQUESTS
+            && self.proxy_unauthorized_responses == self.requests_attempted
+            && self.wildcard_accepts == 0
+            && self.exact_proxy_won
+    }
+}
+
+/// Secret-free evidence for one IPv6 dual-stack wildcard contender tested
+/// against both exact loopback listeners.
+#[derive(Clone, Debug, Default, Serialize, Eq, PartialEq)]
+pub struct ListenerDualStackOverlapEvidence {
+    /// Whether `SO_REUSEADDR` allowed the dual-stack wildcard to bind.
+    ///
+    /// A successful wildcard bind is evidence, not a failed gate by itself.
+    pub wildcard_bind_succeeded: bool,
+    /// Real requests attempted against the exact IPv4 loopback listener.
+    pub ipv4_requests_attempted: u32,
+    /// Exact-proxy `401` responses observed over IPv4.
+    pub ipv4_proxy_unauthorized_responses: u32,
+    /// Real requests attempted against the exact IPv6 loopback listener.
+    pub ipv6_requests_attempted: u32,
+    /// Exact-proxy `401` responses observed over IPv6.
+    pub ipv6_proxy_unauthorized_responses: u32,
+    /// Connections accepted by the dual-stack wildcard listener.
+    pub wildcard_accepts: u64,
+    /// Whether both target probes and the accept monitor completed.
+    pub probe_completed: bool,
+    /// Whether every IPv4 and IPv6 request reached the exact proxies and none
+    /// reached the dual-stack wildcard.
+    pub exact_proxies_won: bool,
+}
+
+impl ListenerDualStackOverlapEvidence {
+    /// Return true only when the raw per-target counters prove the complete
+    /// dual-stack contender invariant.
+    #[must_use]
+    pub const fn proves_exact_proxy_ownership(&self) -> bool {
+        self.probe_completed
+            && self.ipv4_requests_attempted == LISTENER_OVERLAP_REQUESTS
+            && self.ipv4_proxy_unauthorized_responses == self.ipv4_requests_attempted
+            && self.ipv6_requests_attempted == LISTENER_OVERLAP_REQUESTS
+            && self.ipv6_proxy_unauthorized_responses == self.ipv6_requests_attempted
+            && self.wildcard_accepts == 0
+            && self.exact_proxies_won
+    }
+}
+
+/// Secret-free evidence for three Windows wildcard contenders and four exact
+/// loopback traffic paths.
+#[derive(Clone, Debug, Default, Serialize, Eq, PartialEq)]
+pub struct ListenerOverlapEvidence {
+    /// Whether every Windows contender and target probe completed.
+    pub windows_probe_completed: bool,
+    /// IPv4 wildcard contender against exact IPv4.
+    pub ipv4_wildcard: ListenerFamilyOverlapEvidence,
+    /// IPv6 v6-only wildcard contender against exact IPv6.
+    pub ipv6_v6_only_wildcard: ListenerFamilyOverlapEvidence,
+    /// IPv6 dual-stack wildcard contender against exact IPv4 and exact IPv6
+    /// while the same contender remains alive.
+    pub ipv6_dual_stack_wildcard: ListenerDualStackOverlapEvidence,
+}
+
+impl ListenerOverlapEvidence {
+    /// Return true only when all three contenders and all four target paths
+    /// prove exact-proxy ownership from their raw counters.
+    #[must_use]
+    pub const fn all_variants_prove_exact_proxy_ownership(&self) -> bool {
+        self.windows_probe_completed
+            && self.ipv4_wildcard.proves_exact_proxy_ownership()
+            && self.ipv6_v6_only_wildcard.proves_exact_proxy_ownership()
+            && self.ipv6_dual_stack_wildcard.proves_exact_proxy_ownership()
+    }
+}
+
+/// Probe the Windows `SO_EXCLUSIVEADDRUSE` exact-listener boundary against a
+/// same-port wildcard listener configured with `SO_REUSEADDR`.
+///
+/// The wildcard bind result is recorded independently. The security result
+/// depends on repeated exact-loopback requests returning the proxy's fixed
+/// unauthenticated `401` while the wildcard listener accepts zero
+/// connections.
+///
+/// # Errors
+///
+/// Returns an I/O error if a probe socket cannot be configured, a successfully
+/// bound wildcard cannot listen, or its accept monitor cannot be joined.
+#[cfg(windows)]
+pub async fn probe_listener_overlap(proxy: &RunningProxy) -> io::Result<ListenerOverlapEvidence> {
+    let port = proxy.address().port();
+    let ipv4_wildcard = probe_listener_family(
+        proxy,
+        Domain::IPV4,
+        None,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+    )
+    .await?;
+    let ipv6_v6_only_wildcard = probe_listener_family(
+        proxy,
+        Domain::IPV6,
+        Some(true),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+    )
+    .await?;
+    let ipv6_dual_stack_wildcard = probe_dual_stack_listener(
+        proxy,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+    )
+    .await?;
+    Ok(ListenerOverlapEvidence {
+        windows_probe_completed: ipv4_wildcard.probe_completed
+            && ipv6_v6_only_wildcard.probe_completed
+            && ipv6_dual_stack_wildcard.probe_completed,
+        ipv4_wildcard,
+        ipv6_v6_only_wildcard,
+        ipv6_dual_stack_wildcard,
+    })
+}
+
+/// Return unproven evidence when the Windows-only probe is compiled elsewhere.
+#[cfg(not(windows))]
+pub async fn probe_listener_overlap(_proxy: &RunningProxy) -> io::Result<ListenerOverlapEvidence> {
+    Ok(ListenerOverlapEvidence::default())
+}
+
+#[cfg(windows)]
+async fn probe_listener_family(
+    proxy: &RunningProxy,
+    domain: Domain,
+    only_v6: Option<bool>,
+    exact_address: SocketAddr,
+    wildcard_address: SocketAddr,
+) -> io::Result<ListenerFamilyOverlapEvidence> {
+    let wildcard_listener = bind_reusing_wildcard(domain, only_v6, wildcard_address)?;
+    let wildcard_bind_succeeded = wildcard_listener.is_some();
+    let (stop, monitor) = wildcard_listener.map_or((None, None), |listener| {
+        let (stop, receiver) = oneshot::channel();
+        (
+            Some(stop),
+            Some(tokio::spawn(monitor_wildcard_accepts(listener, receiver))),
+        )
+    });
+
+    let mut proxy_unauthorized_responses = 0;
+    for _ in 0..LISTENER_OVERLAP_REQUESTS {
+        if exact_proxy_returns_unauthorized(proxy, exact_address).await {
+            proxy_unauthorized_responses += 1;
+        }
+    }
+
+    if let Some(stop) = stop {
+        let _ = stop.send(());
+    }
+    let (wildcard_accepts, probe_completed) = if let Some(monitor) = monitor {
+        match monitor.await {
+            Ok(Ok(accepts)) => (accepts, true),
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(io::Error::other(
+                    "wildcard listener monitor task terminated",
+                ));
+            }
+        }
+    } else {
+        (0, true)
+    };
+    let exact_proxy_won = probe_completed
+        && proxy_unauthorized_responses == LISTENER_OVERLAP_REQUESTS
+        && wildcard_accepts == 0;
+    Ok(ListenerFamilyOverlapEvidence {
+        wildcard_bind_succeeded,
+        requests_attempted: LISTENER_OVERLAP_REQUESTS,
+        proxy_unauthorized_responses,
+        wildcard_accepts,
+        probe_completed,
+        exact_proxy_won,
+    })
+}
+
+#[cfg(windows)]
+async fn probe_dual_stack_listener(
+    proxy: &RunningProxy,
+    exact_ipv4: SocketAddr,
+    exact_ipv6: SocketAddr,
+    wildcard_address: SocketAddr,
+) -> io::Result<ListenerDualStackOverlapEvidence> {
+    let wildcard_listener = bind_reusing_wildcard(Domain::IPV6, Some(false), wildcard_address)?;
+    let wildcard_bind_succeeded = wildcard_listener.is_some();
+    let (stop, monitor) = wildcard_listener.map_or((None, None), |listener| {
+        let (stop, receiver) = oneshot::channel();
+        (
+            Some(stop),
+            Some(tokio::spawn(monitor_wildcard_accepts(listener, receiver))),
+        )
+    });
+
+    let mut ipv4_proxy_unauthorized_responses = 0;
+    for _ in 0..LISTENER_OVERLAP_REQUESTS {
+        if exact_proxy_returns_unauthorized(proxy, exact_ipv4).await {
+            ipv4_proxy_unauthorized_responses += 1;
+        }
+    }
+    let mut ipv6_proxy_unauthorized_responses = 0;
+    for _ in 0..LISTENER_OVERLAP_REQUESTS {
+        if exact_proxy_returns_unauthorized(proxy, exact_ipv6).await {
+            ipv6_proxy_unauthorized_responses += 1;
+        }
+    }
+
+    if let Some(stop) = stop {
+        let _ = stop.send(());
+    }
+    let (wildcard_accepts, probe_completed) = finish_wildcard_monitor(monitor).await?;
+    let exact_proxies_won = probe_completed
+        && ipv4_proxy_unauthorized_responses == LISTENER_OVERLAP_REQUESTS
+        && ipv6_proxy_unauthorized_responses == LISTENER_OVERLAP_REQUESTS
+        && wildcard_accepts == 0;
+    Ok(ListenerDualStackOverlapEvidence {
+        wildcard_bind_succeeded,
+        ipv4_requests_attempted: LISTENER_OVERLAP_REQUESTS,
+        ipv4_proxy_unauthorized_responses,
+        ipv6_requests_attempted: LISTENER_OVERLAP_REQUESTS,
+        ipv6_proxy_unauthorized_responses,
+        wildcard_accepts,
+        probe_completed,
+        exact_proxies_won,
+    })
+}
+
+#[cfg(windows)]
+fn bind_reusing_wildcard(
+    domain: Domain,
+    only_v6: Option<bool>,
+    wildcard_address: SocketAddr,
+) -> io::Result<Option<TcpListener>> {
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    if let Some(only_v6) = only_v6 {
+        socket.set_only_v6(only_v6)?;
+    }
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    if let Err(error) = socket.bind(&wildcard_address.into()) {
+        if expected_wildcard_bind_rejection(&error) {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    socket.listen(128)?;
+    let listener: std::net::TcpListener = socket.into();
+    Ok(Some(TcpListener::from_std(listener)?))
+}
+
+#[cfg(windows)]
+fn expected_wildcard_bind_rejection(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+    )
+}
+
+#[cfg(windows)]
+async fn finish_wildcard_monitor(
+    monitor: Option<JoinHandle<io::Result<u64>>>,
+) -> io::Result<(u64, bool)> {
+    if let Some(monitor) = monitor {
+        match monitor.await {
+            Ok(Ok(accepts)) => Ok((accepts, true)),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(io::Error::other(
+                "wildcard listener monitor task terminated",
+            )),
+        }
+    } else {
+        Ok((0, true))
+    }
+}
+
+#[cfg(windows)]
+async fn monitor_wildcard_accepts(
+    listener: TcpListener,
+    mut stop: oneshot::Receiver<()>,
+) -> io::Result<u64> {
+    let mut accepts = 0_u64;
+    loop {
+        tokio::select! {
+            _ = &mut stop => {
+                loop {
+                    match timeout(Duration::from_millis(25), listener.accept()).await {
+                        Ok(Ok((_socket, _peer))) => accepts += 1,
+                        Ok(Err(error)) => return Err(error),
+                        Err(_) => return Ok(accepts),
+                    }
+                }
+            }
+            accepted = listener.accept() => {
+                let (_socket, _peer) = accepted?;
+                accepts += 1;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn exact_proxy_returns_unauthorized(proxy: &RunningProxy, exact_address: SocketAddr) -> bool {
+    let request = format!(
+        "GET /api/data HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        proxy.address().authority()
+    );
+    let observed = timeout(Duration::from_secs(1), async {
+        let mut socket = TcpStream::connect(exact_address).await?;
+        socket.write_all(request.as_bytes()).await?;
+        let mut response = Vec::with_capacity(512);
+        socket.take(4096).read_to_end(&mut response).await?;
+        Ok::<_, io::Error>(response)
+    })
+    .await;
+    matches!(
+        observed,
+        Ok(Ok(response)) if response.starts_with(b"HTTP/1.1 401 ")
+    )
 }
 
 #[derive(Default)]
@@ -743,5 +1108,63 @@ mod tests {
             r#"{"cssLoaded":false,"scriptLoaded":false,"imageLoaded":false,"fetchGet":false,"fetchPost":false,"streamRead":false,"websocketEcho":false,"proxyCookieVisible":false,"secretShapeVisible":false,"externalRedirectCompleted":false,"childHostRequestCompleted":false,"secret":"bad"}"#,
         );
         assert!(report.is_err());
+    }
+
+    #[test]
+    fn listener_overlap_pass_requires_all_three_contenders_and_four_paths() {
+        let passing_family = ListenerFamilyOverlapEvidence {
+            wildcard_bind_succeeded: true,
+            requests_attempted: 8,
+            proxy_unauthorized_responses: 8,
+            wildcard_accepts: 0,
+            probe_completed: true,
+            exact_proxy_won: true,
+        };
+        let passing_dual_stack = ListenerDualStackOverlapEvidence {
+            wildcard_bind_succeeded: true,
+            ipv4_requests_attempted: 8,
+            ipv4_proxy_unauthorized_responses: 8,
+            ipv6_requests_attempted: 8,
+            ipv6_proxy_unauthorized_responses: 8,
+            wildcard_accepts: 0,
+            probe_completed: true,
+            exact_proxies_won: true,
+        };
+        let mut evidence = ListenerOverlapEvidence {
+            windows_probe_completed: true,
+            ipv4_wildcard: passing_family.clone(),
+            ipv6_v6_only_wildcard: passing_family,
+            ipv6_dual_stack_wildcard: passing_dual_stack,
+        };
+        assert!(evidence.all_variants_prove_exact_proxy_ownership());
+
+        evidence.ipv6_v6_only_wildcard.wildcard_accepts = 1;
+        evidence.ipv6_v6_only_wildcard.exact_proxy_won = false;
+        assert!(!evidence.all_variants_prove_exact_proxy_ownership());
+        evidence.ipv6_v6_only_wildcard.wildcard_accepts = 0;
+        evidence.ipv6_v6_only_wildcard.exact_proxy_won = true;
+        evidence
+            .ipv6_dual_stack_wildcard
+            .ipv4_proxy_unauthorized_responses = 7;
+        assert!(!evidence.all_variants_prove_exact_proxy_ownership());
+        evidence
+            .ipv6_dual_stack_wildcard
+            .ipv4_proxy_unauthorized_responses = 8;
+        evidence.windows_probe_completed = false;
+        assert!(!evidence.all_variants_prove_exact_proxy_ownership());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_expected_windows_bind_conflicts_count_as_safe_rejection() {
+        assert!(expected_wildcard_bind_rejection(&io::Error::from(
+            io::ErrorKind::AddrInUse
+        )));
+        assert!(expected_wildcard_bind_rejection(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!expected_wildcard_bind_rejection(&io::Error::other(
+            "unexpected wildcard bind failure"
+        )));
     }
 }

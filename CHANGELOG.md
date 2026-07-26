@@ -23,6 +23,11 @@ All notable changes to this pre-release repository are documented here.
 - Added tracked shutdown/drain for downstream connections, upstream protocol
   drivers, and upgrade tunnels, plus an activity-based WebSocket idle
   watchdog.
+- Added secret-free Windows overlap evidence for IPv4 wildcard, IPv6 v6-only
+  wildcard, and IPv6 dual-stack wildcard contenders. The dual-stack contender
+  remains alive across exact IPv4 and IPv6 probes. Each of the four traffic
+  paths requires 8/8 proxy `401` responses and zero wildcard accepts. Bind
+  success is recorded independently, while unexpected bind errors fail closed.
 - Refreshed the compatible Futures and Hyper stack together and validated the
   combined lockfile through the real WebView2 gate. `webview2-com` remains on
   `0.38.2` until Tauri/wry migrate their Windows COM type graph from 0.61 to
@@ -37,8 +42,10 @@ All notable changes to this pre-release repository are documented here.
   hostname isolation, external redirects, process metadata, and clean
   shutdown, including same-data-directory profile recreation.
 - Recorded a passing development-runtime run on WebView2 `150.0.4078.83`,
-  including the clean profile-recreation gate. This is not a fixed-minimum or
-  release-readiness claim.
+  including the clean profile-recreation gate and the three-contender,
+  four-path listener-overlap gate. All three wildcard binds succeeded while
+  all 32 exact-loopback requests reached the proxy and wildcard accepts
+  remained zero. This is not a fixed-minimum or release-readiness claim.
 
 ### Known pre-release gaps
 
@@ -52,7 +59,5 @@ All notable changes to this pre-release repository are documented here.
 - HTTP idle/body-rate and WebSocket byte-rate abuse, plus the complete
   malformed-upstream matrix, are not finished. WebSocket activity-idle
   shutdown is already tested.
-- Windows exact-address listener takeover is rejected; wildcard overlap remains
-  an explicit unresolved release gate.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.
