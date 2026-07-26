@@ -2584,10 +2584,12 @@ name = "rpackit-windows-spike"
 version = "0.1.0"
 dependencies = [
  "cookie",
+ "hex",
  "rpackit-transport",
  "rpackit-transport-testkit",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tempfile",

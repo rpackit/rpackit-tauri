@@ -15,6 +15,8 @@ use rpackit_transport_testkit::{
 };
 use serde::Serialize;
 
+use crate::fixed_runtime::RuntimeEvidence;
+
 /// Native cookie evidence. No credential value is retained.
 ///
 /// Separate booleans are intentional because this is a serialized evidence
@@ -218,7 +220,8 @@ impl BrowserEscapeProbe {
     pub(crate) fn snapshot(
         &self,
         probe_completed: bool,
-        environment_overrides_absent: bool,
+        untrusted_environment_overrides_absent: bool,
+        runtime_environment_matches_selection: bool,
         registry_overrides_absent_before_creation: bool,
         registry_overrides_absent_after_creation: bool,
         devtools_active_port_absent: bool,
@@ -263,7 +266,8 @@ impl BrowserEscapeProbe {
             extension_install_rejected_not_supported: self
                 .extension_install_rejected_not_supported
                 .load(Ordering::SeqCst),
-            environment_overrides_absent,
+            untrusted_environment_overrides_absent,
+            runtime_environment_matches_selection,
             registry_overrides_absent_before_creation,
             registry_overrides_absent_after_creation,
             devtools_active_port_absent,
@@ -299,7 +303,8 @@ pub struct BrowserEscapeEvidence {
     pub extension_install_attempted: bool,
     pub extension_install_completed: bool,
     pub extension_install_rejected_not_supported: bool,
-    pub environment_overrides_absent: bool,
+    pub untrusted_environment_overrides_absent: bool,
+    pub runtime_environment_matches_selection: bool,
     pub registry_overrides_absent_before_creation: bool,
     pub registry_overrides_absent_after_creation: bool,
     pub devtools_active_port_absent: bool,
@@ -340,7 +345,8 @@ impl BrowserEscapeEvidence {
             && self.extension_install_attempted
             && self.extension_install_completed
             && self.extension_install_rejected_not_supported
-            && self.environment_overrides_absent
+            && self.untrusted_environment_overrides_absent
+            && self.runtime_environment_matches_selection
             && self.registry_overrides_absent_before_creation
             && self.registry_overrides_absent_after_creation
             && self.devtools_active_port_absent
@@ -533,6 +539,7 @@ pub struct AcceptanceReport {
     pub harness_version: &'static str,
     pub platform: &'static str,
     pub webview2_runtime: Option<String>,
+    pub runtime: RuntimeEvidence,
     pub hostname_resolution: ResolutionReport,
     pub listener_overlap: ListenerOverlapEvidence,
     pub malformed_upstream_response_heads: MalformedUpstreamEvidence,
@@ -555,7 +562,7 @@ pub struct AcceptanceReport {
 impl AcceptanceReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        webview2_runtime: Option<String>,
+        runtime: RuntimeEvidence,
         resolution: HostResolution,
         listener_overlap: ListenerOverlapEvidence,
         malformed_upstream_response_heads: MalformedUpstreamEvidence,
@@ -572,10 +579,13 @@ impl AcceptanceReport {
         gates: DevelopmentGates,
     ) -> Self {
         let development_gates_passed = gates.all_pass();
-        let mut unproven_release_gates = BTreeMap::from([(
-            "fixed_minimum_webview2",
-            "the complete matrix has not run against a reviewed fixed minimum runtime",
-        )]);
+        let mut unproven_release_gates = BTreeMap::new();
+        if !runtime.reviewed_fixed_minimum_proven {
+            unproven_release_gates.insert(
+                "fixed_minimum_webview2",
+                "the complete matrix has not run against the exact reviewed and supported fixed minimum runtime",
+            );
+        }
         if !crash_profile.all_forced_crash_controls_hold() {
             unproven_release_gates.insert(
                 "crash_profile_persistence",
@@ -606,11 +616,13 @@ impl AcceptanceReport {
                 "valid fragmented body baselines plus truncated fixed-length, malformed chunked, unsafe trailer, limit, and response-splitting cases have not all proven bounded fail-closed behavior",
             );
         }
+        let phase1_release_ready = development_gates_passed && unproven_release_gates.is_empty();
         Self {
             transport_contract_version: 2,
             harness_version: env!("CARGO_PKG_VERSION"),
             platform: std::env::consts::OS,
-            webview2_runtime,
+            webview2_runtime: runtime.actual_version.clone(),
+            runtime,
             hostname_resolution: ResolutionReport::from(resolution),
             listener_overlap,
             malformed_upstream_response_heads,
@@ -626,7 +638,7 @@ impl AcceptanceReport {
             external_collector,
             gates,
             development_gates_passed,
-            phase1_release_ready: false,
+            phase1_release_ready,
             unproven_release_gates,
         }
     }
@@ -720,7 +732,7 @@ mod tests {
         malformed_upstream_bodies: MalformedUpstreamBodyEvidence,
     ) -> AcceptanceReport {
         AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             listener_overlap,
             malformed_upstream,
@@ -760,6 +772,47 @@ mod tests {
             probe_completed: true,
             exact_proxies_won: true,
         }
+    }
+
+    #[test]
+    fn fixed_minimum_gap_requires_exact_reviewed_runtime_evidence() {
+        let development = report(ListenerOverlapEvidence::default());
+        assert!(
+            development
+                .unproven_release_gates
+                .contains_key("fixed_minimum_webview2")
+        );
+
+        let fixed = AcceptanceReport::new(
+            RuntimeEvidence {
+                mode: "reviewed-fixed",
+                actual_version: Some("149.0.4022.98".to_owned()),
+                fixed_runtime_identity_verified: true,
+                actual_version_matches_supported_minimum: true,
+                reviewed_fixed_minimum_proven: true,
+                ..RuntimeEvidence::default()
+            },
+            HostResolution::Unavailable,
+            ListenerOverlapEvidence::default(),
+            MalformedUpstreamEvidence::default(),
+            MalformedUpstreamBodyEvidence::default(),
+            RequestBodyLimitEvidence::default(),
+            ResponseResourceLimitEvidence::default(),
+            WebSocketRateLimitEvidence::default(),
+            BrowserEscapeEvidence::default(),
+            CrashProfileEvidence::default(),
+            CookieEvidence::default(),
+            BrowserReport::default(),
+            UpstreamSnapshot::default(),
+            CollectorSnapshot::default(),
+            DevelopmentGates::default(),
+        );
+        assert!(
+            !fixed
+                .unproven_release_gates
+                .contains_key("fixed_minimum_webview2")
+        );
+        assert!(!fixed.phase1_release_ready);
     }
 
     #[test]
@@ -1043,7 +1096,7 @@ mod tests {
         assert!(gates.request_body_resource_limits_fail_closed);
 
         let report = AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             ListenerOverlapEvidence::default(),
             MalformedUpstreamEvidence::default(),
@@ -1121,7 +1174,7 @@ mod tests {
         assert!(gates.response_resource_limits_fail_closed);
 
         let report = AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             ListenerOverlapEvidence::default(),
             MalformedUpstreamEvidence::default(),
@@ -1197,7 +1250,7 @@ mod tests {
         assert!(gates.websocket_byte_rates_bounded);
 
         let report = AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             ListenerOverlapEvidence::default(),
             MalformedUpstreamEvidence::default(),
@@ -1272,7 +1325,7 @@ mod tests {
         assert!(gates.crash_profile_persistence_pass);
 
         let report = AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             ListenerOverlapEvidence::default(),
             MalformedUpstreamEvidence::default(),
@@ -1324,7 +1377,8 @@ mod tests {
             extension_install_attempted: true,
             extension_install_completed: true,
             extension_install_rejected_not_supported: true,
-            environment_overrides_absent: true,
+            untrusted_environment_overrides_absent: true,
+            runtime_environment_matches_selection: true,
             registry_overrides_absent_before_creation: true,
             registry_overrides_absent_after_creation: true,
             devtools_active_port_absent: true,
@@ -1376,7 +1430,7 @@ mod tests {
         assert!(gates.browser_escape_matrix_pass);
 
         let report = AcceptanceReport::new(
-            None,
+            RuntimeEvidence::default(),
             HostResolution::Unavailable,
             ListenerOverlapEvidence::default(),
             MalformedUpstreamEvidence::default(),

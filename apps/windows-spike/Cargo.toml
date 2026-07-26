@@ -13,10 +13,12 @@ tauri-build.workspace = true
 
 [dependencies]
 cookie.workspace = true
+hex.workspace = true
 rpackit-transport = { path = "../../crates/transport" }
 rpackit-transport-testkit = { path = "../../crates/transport-testkit" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tauri.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

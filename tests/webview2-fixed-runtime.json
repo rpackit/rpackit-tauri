@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-07-26",
+  "architecture": "x64",
+  "api_capability_floor": "120.0.2210.55",
+  "api_capability_reason": "ICoreWebView2Profile7 is the newest Win32 interface required by the harness and was introduced by WebView2 SDK 1.0.2210.55.",
+  "supported_minimum_runtime": "149.0.4022.98",
+  "package_directory": "Microsoft.WebView2.FixedVersionRuntime.149.0.4022.98.x64",
+  "official_download_page": "https://developer.microsoft.com/en-us/microsoft-edge/webview2/",
+  "archive_url": "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/2943b6d1-31d1-42c5-8cfa-c2c31485974d/Microsoft.WebView2.FixedVersionRuntime.149.0.4022.98.x64.cab",
+  "archive_file": "Microsoft.WebView2.FixedVersionRuntime.149.0.4022.98.x64.cab",
+  "archive_sha256": "81a1a5b8c72d7f8317b9fffc5f4f17f3efe8db42655e869ea4b2a05b65512af2",
+  "archive_bytes": 293851515,
+  "expanded_tree_sha256": "784967a6aa1c6e57fb7ed8b2562c40e404db2a17c3ed3ef6ece327cd57914c31",
+  "expanded_file_count": 259,
+  "expanded_bytes": 667247853,
+  "tree_hash_algorithm": "rpackit-webview2-tree-v1",
+  "executable": "msedgewebview2.exe",
+  "executable_sha256": "d9d0140160e18fd2235335eeee60eebfa9e8ba8d9046346846142e2f30b0149a",
+  "expected_signer_subject": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+  "expected_signer_thumbprint": "4028CAD637509D4744B17EC5B42AED8D7A31E6AF"
+}

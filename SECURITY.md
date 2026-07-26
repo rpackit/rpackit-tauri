@@ -33,10 +33,31 @@ violates the security contract.
 
 ## Current assurance level
 
-The repository is a pre-release Windows transport spike. Passing the current
-development runtime demonstrates useful empirical behavior, but does not prove
-the reviewed fixed minimum WebView2 runtime. Exact-address listener takeover
-is rejected.
+The repository is a pre-release Windows transport acceptance spike. Phase 1
+has passed on both the development Runtime `150.0.4078.99` and the exact
+reviewed x64 Fixed Version Runtime `149.0.4022.98`, in Debug and Release.
+The fixed reports contain no unproven release gate and record
+`phase1_release_ready: true`. This assurance does not cover the Phase 2 R
+launcher lifecycle, a generated application, an installer, or code signing.
+Exact-address listener takeover is rejected.
+
+The newest WebView2 API used by the harness has a historical compatibility
+floor of `120.0.2210.55`, but that obsolete runtime is neither publicly
+supported nor accepted as the product baseline. The supported minimum was
+reviewed on 2026-07-26 as the older Fixed Version still offered by Microsoft,
+`149.0.4022.98`. Its manifest pins the Microsoft source, archive length and
+SHA-256, full expanded tree identity, executable digest and version, signer
+subject, and certificate thumbprint. Native startup re-verifies the exact tree
+before Tauri injects the one trusted browser-folder environment value; every
+ambient WebView2 override remains forbidden. The crash child removes inherited
+override variables and independently repeats this process. A renamed,
+partially copied, modified, wrong-architecture, or arbitrary runtime directory
+cannot close the fixed-minimum gate.
+
+Fixed browser engines do not update themselves. Maintainers must regularly
+review and raise the supported minimum, rerun both profiles, and never keep an
+old baseline merely to preserve a passing report. The CAB and extracted
+runtime are temporary test inputs and must not be committed.
 The Windows development gate also tests IPv4 wildcard, IPv6 v6-only wildcard,
 and IPv6 dual-stack wildcard overlap. The same dual-stack contender remains
 alive while exact IPv4 and IPv6 are both tested. All four traffic paths must
@@ -66,13 +87,14 @@ marker must remain absent, and the protocol registration must be removed and
 verified absent. The isolated download directory must remain empty. Native
 readback requires devtools, browser accelerator keys, and default context
 menus disabled; a valid unpacked-extension install must be explicitly
-rejected as unsupported. The shell fails before bootstrap on WebView2
-environment or policy-registry overrides, repeats the policy check after
-creation, and rejects a profile containing `DevToolsActivePort`. The recorded
-WebView2 `150.0.4078.99` run passed this matrix with one document network
+rejected as unsupported. The shell fails before bootstrap on untrusted
+WebView2 environment or policy-registry overrides, permits only the exact
+verified fixed-runtime folder injected by Tauri, repeats the policy check
+after creation, and rejects a profile containing `DevToolsActivePort`. The
+recorded WebView2 `150.0.4078.99` run passed this matrix with one document network
 block, one popup denial, one download cancellation, one cancelled native
 external-scheme event with no canary launch, and zero external collector
-requests.
+requests. The reviewed fixed Debug and Release matrices passed the same gate.
 
 Upstream response heads cross a raw admission guard before Hyper can interpret
 them. The guard rejects ambiguous `Content-Length`/`Transfer-Encoding`,
@@ -141,6 +163,9 @@ bootstrap header.
 The recorded WebView2 `150.0.4078.99` debug and release runs both passed at
 997 ms client-to-upstream and 934 ms upstream-to-client, with 3/3 valid
 normalized handshakes and zero credential leakage.
+The reviewed fixed Runtime `149.0.4022.98` passed at 1,007/934 ms in Debug and
+1,006/921 ms in Release, also with 3/3 valid normalized handshakes and no
+credential leakage.
 
 The ordinary HTTP body gate separately proves fragmented fixed-length,
 chunked, and close-delimited baselines plus bodyless `HEAD` and `304`
@@ -170,5 +195,8 @@ enforces this isolation.
 
 The body policy gives all `HEAD`, `204`, `205`, and `304` responses a
 zero-byte streaming allowance. The configured encoded cap is followed by the
-independent decoded cap for transformed streaming responses. Do not describe
-the transport as Phase 1 release-ready until every assigned gate passes.
+independent decoded cap for transformed streaming responses. A Phase 1 claim
+is valid only for reports that verify the reviewed fixed identity, load the
+exact supported minimum, pass every development gate, and contain no unproven
+release gate. Phase 1 now meets that boundary; do not extend the claim to
+Phase 2 or later work.

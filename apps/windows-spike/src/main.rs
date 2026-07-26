@@ -1,6 +1,7 @@
 //! Real `WebView2` acceptance shell for transport contract version 2.
 
 mod crash_profile;
+mod fixed_runtime;
 #[cfg(windows)]
 mod native_webview;
 mod report;
@@ -50,16 +51,6 @@ use winreg::{
 
 type HarnessError = Box<dyn StdError + Send + Sync>;
 
-const FORBIDDEN_WEBVIEW_ENVIRONMENT_VARIABLES: &[&str] = &[
-    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-    "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
-    "WEBVIEW2_USER_DATA_FOLDER",
-    "WEBVIEW2_CHANNEL_SEARCH_KIND",
-    "WEBVIEW2_RELEASE_CHANNELS",
-    "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
-    "WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER",
-    "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER",
-];
 const WEBVIEW2_OVERRIDE_POLICY_KEYS: &[&str] = &[
     r"Software\Policies\Microsoft\Edge\WebView2\BrowserExecutableFolder",
     r"Software\Policies\Microsoft\Edge\WebView2\ChannelSearchKind",
@@ -80,6 +71,7 @@ const PROFILE_SCAN_ENTRY_LIMIT: usize = 100_000;
 #[derive(Clone, Debug)]
 struct HarnessOptions {
     report_path: PathBuf,
+    fixed_runtime_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -93,6 +85,13 @@ impl HarnessMode {
         match self {
             Self::Acceptance(options) => Some(options.report_path.clone()),
             Self::CrashProfileProducer(_) => None,
+        }
+    }
+
+    fn fixed_runtime_path(&self) -> Option<&Path> {
+        match self {
+            Self::Acceptance(options) => options.fixed_runtime_path.as_deref(),
+            Self::CrashProfileProducer(options) => options.fixed_runtime_path(),
         }
     }
 }
@@ -223,10 +222,23 @@ fn main() {
         std::process::exit(exit_code);
     }
     let Ok(mode) = parse_options() else {
-        eprintln!("usage: rpackit-windows-spike [--report <path>]");
+        eprintln!("usage: rpackit-windows-spike [--report <path>] [--fixed-runtime <path>]");
         std::process::exit(2);
     };
     let failure_path = mode.failure_report_path();
+    let runtime_selection =
+        match fixed_runtime::RuntimeSelection::prepare(mode.fixed_runtime_path()) {
+            Ok(selection) => selection,
+            Err(error) => {
+                if let Some(path) = &failure_path {
+                    let _ = write_failure_report(path);
+                }
+                eprintln!("WebView2 runtime preparation failed: {error}");
+                std::process::exit(1);
+            }
+        };
+    let mut context = tauri::generate_context!();
+    runtime_selection.configure_context(&mut context);
     let async_failure_path = failure_path.clone();
     let process_exit_code = Arc::new(AtomicI32::new(1));
     let async_exit_code = Arc::clone(&process_exit_code);
@@ -236,9 +248,11 @@ fn main() {
             let exit_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 let result = match mode {
-                    HarnessMode::Acceptance(options) => run_harness(handle, options).await,
+                    HarnessMode::Acceptance(options) => {
+                        run_harness(handle, options, runtime_selection).await
+                    }
                     HarnessMode::CrashProfileProducer(options) => {
-                        crash_profile::run_producer(handle, options).await
+                        crash_profile::run_producer(handle, options, runtime_selection).await
                     }
                 };
                 let exit_code = if let Ok(exit_code) = result {
@@ -254,7 +268,7 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .run(context);
     if result.is_err() {
         if let Some(path) = failure_path {
             let _ = write_failure_report(&path);
@@ -299,6 +313,7 @@ fn parse_harness_options(
     mut arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<HarnessOptions, ()> {
     let mut report_path = None;
+    let mut fixed_runtime_path = None;
     while let Some(argument) = arguments.next() {
         if argument == "--report" {
             if report_path.is_some() {
@@ -308,6 +323,14 @@ fn parse_harness_options(
             if report_path.is_none() {
                 return Err(());
             }
+        } else if argument == fixed_runtime::FIXED_RUNTIME_ARGUMENT {
+            if fixed_runtime_path.is_some() {
+                return Err(());
+            }
+            fixed_runtime_path = arguments.next().map(PathBuf::from);
+            if fixed_runtime_path.is_none() {
+                return Err(());
+            }
         } else {
             return Err(());
         }
@@ -315,12 +338,17 @@ fn parse_harness_options(
     Ok(HarnessOptions {
         report_path: report_path
             .unwrap_or_else(|| std::env::temp_dir().join("rpackit-transport-spike-report.json")),
+        fixed_runtime_path,
     })
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32, HarnessError> {
-    reject_webview_environment_overrides()?;
+async fn run_harness(
+    app: AppHandle<Wry>,
+    options: HarnessOptions,
+    runtime_selection: fixed_runtime::RuntimeSelection,
+) -> Result<i32, HarnessError> {
+    runtime_selection.verify_configured_environment()?;
     let registry_overrides_absent_before_creation = webview_registry_overrides_absent()?;
     if !registry_overrides_absent_before_creation {
         return Err(io::Error::other("WebView2 registry override is not allowed").into());
@@ -426,6 +454,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     let browser_escape_evidence = browser_escape_probe.snapshot(
         browser_escape_probe_completed,
         true,
+        true,
         registry_overrides_absent_before_creation,
         registry_overrides_absent_after_creation,
         devtools_active_port_absent,
@@ -435,7 +464,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         external_scheme_handler_canary_absent,
         external_scheme_registration_removed,
     );
-    let crash_profile_evidence = crash_profile::probe(&app).await;
+    let crash_profile_evidence = crash_profile::probe(&app, &runtime_selection).await;
     let upstream_snapshot = upstream.snapshot().await;
     let collector_snapshot = collector.snapshot();
     let cookie_evidence = evidence
@@ -488,8 +517,9 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         cleanup_browsing_data_queued,
         window_destroyed,
     );
+    let runtime_evidence = runtime_selection.evidence(tauri::webview_version().ok());
     let report = AcceptanceReport::new(
-        tauri::webview_version().ok(),
+        runtime_evidence,
         resolution,
         listener_overlap,
         malformed_upstream,
@@ -506,7 +536,12 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         gates,
     );
     report.write(&options.report_path)?;
-    let exit_code = i32::from(!report.development_gates_passed);
+    let required_gates_passed = if runtime_selection.requires_release_gate() {
+        report.phase1_release_ready
+    } else {
+        report.development_gates_passed
+    };
+    let exit_code = i32::from(!required_gates_passed);
 
     proxy.shutdown().await?;
     upstream.shutdown().await?;
@@ -847,18 +882,9 @@ fn update_evidence(
     }
 }
 
-fn reject_webview_environment_overrides() -> Result<(), HarnessError> {
-    if webview_environment_override_present(|name| std::env::var_os(name).is_some()) {
-        return Err(io::Error::other("WebView2 environment override is not allowed").into());
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn webview_environment_override_present(is_present: impl Fn(&str) -> bool) -> bool {
-    FORBIDDEN_WEBVIEW_ENVIRONMENT_VARIABLES
-        .iter()
-        .copied()
-        .any(is_present)
+    !fixed_runtime::webview_environment_override_absent(is_present)
 }
 
 fn webview_registry_overrides_absent() -> io::Result<bool> {

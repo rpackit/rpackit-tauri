@@ -3,9 +3,9 @@
 Maintained native Tauri templates and the security-critical loopback transport
 for [rpackit](https://github.com/rpackit/rpackit).
 
-The repository currently contains the Windows **Phase 1 transport spike**. It
-is an executable acceptance harness, not a supported application generator or
-installer. The authoritative contract is
+The repository currently contains the completed Windows **Phase 1 transport
+spike**. It is an executable acceptance harness, not a supported application
+generator or installer. The authoritative contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md);
 this implementation follows transport contract version 2.
 
@@ -128,6 +128,15 @@ The harness exited `0` with `development_gates_passed: true`. This evidence is
 specific to the recorded runtime and machine; a different runtime must produce
 its own passing report.
 
+The same complete matrix subsequently passed in both Debug and Release against
+the reviewed x64 Fixed Version Runtime `149.0.4022.98`. Both reports loaded
+that exact version, verified the committed manifest and expanded runtime tree,
+contained no secret shape, had no unproven release gates, and recorded
+`phase1_release_ready: true`. The Debug WebSocket rate cases measured 1,007 ms
+client-to-upstream and 934 ms upstream-to-client; Release measured 1,006 ms
+and 921 ms. This closes the Phase 1 fixed-minimum gate; it does not implement
+the Phase 2 R launcher lifecycle.
+
 On this Windows installation, the system/Tokio DNS probe returned
 `unavailable` for the random `.localhost` subdomain. That is not treated as
 proof that arbitrary system resolvers support the name. The WebView boundary
@@ -136,11 +145,13 @@ which reserves every name under `.localhost` for loopback, and Chromium's
 source-level rule to
 [`Always treat .localhost as loopback`](https://chromium.googlesource.com/chromium/src/+/5d131a1fd9b808c5fd08c45f8299e669b13ec393%5E%21/).
 [WebView2 uses the Microsoft Edge/Chromium runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/).
-The shell rejects WebView2 environment overrides that can replace the runtime,
-profile, channel, or browser arguments. It also checks the machine and user
-WebView2 policy-registry views for the application, executable, and wildcard
-identities before and after WebView creation. A system probe that ever
-observes a non-loopback answer stops before a WebView or `B` request is
+The shell rejects untrusted WebView2 environment overrides that can replace
+the runtime, profile, channel, or browser arguments. Fixed-runtime mode first
+verifies the exact reviewed package and then asks Tauri to set the one expected
+browser-folder override before runtime creation. It also checks the machine
+and user WebView2 policy-registry views for the application, executable, and
+wildcard identities before and after WebView creation. A system probe that
+ever observes a non-loopback answer stops before a WebView or `B` request is
 created.
 
 The real WebView also loaded the authenticated bootstrap and application
@@ -158,7 +169,8 @@ Required Windows baseline:
 - Visual Studio 2022 C++ desktop workload and Windows SDK
 - Tauri CLI `2.11.4`
 - Tauri crate `2.11.5`
-- WebView2 Runtime
+- WebView2 Runtime `149.0.4022.98` or newer; the reviewed Phase 1 minimum is
+  tested separately as an exact Fixed Version package
 
 Install the pinned CLI:
 
@@ -187,9 +199,23 @@ Run the real WebView2 acceptance harness:
 .\tests\run-webview2.ps1
 ```
 
-The harness exits nonzero when a required gate fails and writes only a
-secret-free JSON report to a caller-selected temporary path. No report,
-runtime profile, or build product belongs in Git.
+Run the reviewed fixed-minimum Debug and Release matrices:
+
+```powershell
+.\tests\run-webview2-fixed.ps1
+```
+
+The fixed runner downloads the x64 package from the pinned Microsoft CDN URL,
+checks the archive length and SHA-256, extracts it with `expand.exe`, verifies
+the exact 259-file/667,247,853-byte tree digest, executable digest, file
+version, Microsoft signer and certificate thumbprint, and then deletes the
+temporary archive and runtime. Both runners reuse the repository Cargo
+`target` directory by default instead of creating another multi-gigabyte
+temporary build cache.
+
+The harness exits nonzero when a required gate fails and writes only
+secret-free JSON reports to caller-selected temporary paths. No report,
+runtime archive, extracted runtime, profile, or build product belongs in Git.
 
 Listener ownership is a measured Windows development gate. After the proxy
 owns exact IPv4 and IPv6 loopback addresses, the harness tries three same-port
@@ -309,6 +335,9 @@ report serializes this evidence as `websocket_rate_limits`; the
 The recorded WebView2 `150.0.4078.99` debug and release runs both passed with
 997 ms client-to-upstream and 934 ms upstream-to-client delivery, 3/3 valid
 normalized upstream handshakes, and zero credential leaks.
+The reviewed Fixed Version Runtime `149.0.4022.98` also passed in Debug at
+1,007/934 ms and Release at 1,006/921 ms, again with all 3 handshakes valid and
+normalized and no credential leakage.
 
 The ordinary forwarder captures the request method before sending it upstream.
 Responses to `HEAD` and `304 Not Modified` retain a nonzero hypothetical
@@ -344,13 +373,13 @@ downstream closure rather than inherited upstream advice.
 
 ## Status
 
-This code is pre-release and `phase1_release_ready` remains false. Known
-Phase 1 release gap: the complete matrix has not run against a reviewed fixed
-minimum WebView2 runtime.
+This repository remains pre-release because it is an acceptance spike, but
+Phase 1 is complete: the development runtime and the exact reviewed Fixed
+Version Runtime `149.0.4022.98` both passed the complete matrix in Debug and
+Release. The fixed reports have `development_gates_passed: true`,
+`phase1_release_ready: true`, and an empty `unproven_release_gates` object.
 
-A development-runtime pass cannot substitute for the complete matrix.
-Protocol-2 R
-launcher ownership and Windows Job Objects belong to Phase 2; resource
-generation and installers are later milestones. See
+Protocol-2 R launcher ownership and Windows Job Objects belong to Phase 2;
+resource generation and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

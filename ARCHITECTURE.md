@@ -2,7 +2,7 @@
 
 ## Scope and authority
 
-This repository implements the Windows Phase 1 spike for rpackit's
+This repository implements the completed Windows Phase 1 spike for rpackit's
 authenticated native loopback transport. The authoritative security contract
 is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md).
@@ -19,7 +19,8 @@ supported installer, or implementation of protocol-2 R process ownership.
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
 | `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
-| `tests/run-webview2.ps1` | Starts the real WebView2 harness and rejects a failed development gate | Fixed-runtime certification or installer validation |
+| `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
+| `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
 
 ## Secret and origin model
 
@@ -156,11 +157,16 @@ requires devtools, browser accelerator keys, and default context menus to be
 disabled. A valid unpacked extension must fail installation with the Windows
 `ERROR_NOT_SUPPORTED` result.
 
-Before creation the shell rejects WebView2 environment overrides and checks
-both machine and user policy-registry views, including 32-bit and 64-bit
-views, for application-, executable-, and wildcard-scoped runtime, channel,
-argument, and profile overrides. It repeats the registry check after creation
-and requires the isolated profile to contain no `DevToolsActivePort`.
+Before creation the shell rejects every untrusted WebView2 environment
+override and checks both machine and user policy-registry views, including
+32-bit and 64-bit views, for application-, executable-, and wildcard-scoped
+runtime, channel, argument, and profile overrides. In reviewed fixed mode only,
+the shell first verifies the complete package identity and then changes the
+in-memory Tauri context to `WebviewInstallMode::FixedRuntime`. Tauri injects
+the exact verified `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` before it creates the
+runtime. The shell checks that this is the only runtime environment change,
+repeats the registry check after creation, and requires the isolated profile
+to contain no `DevToolsActivePort`.
 
 Normal cleanup deletes `P`, clears browsing data, destroys the WebView, and
 recreates the same profile to test that no cookie is reusable. A separate
@@ -171,7 +177,36 @@ its non-secret random hostname. The parent forcibly terminates the producer
 and requires a held graceful-cleanup sentinel to remain absent. It then
 recreates a WebView with the same profile and old hostname, requires `P` to be
 absent, destroys that WebView, and removes the profile directory. Both clean
-and forced-crash recreation gates passed on the recorded development runtime.
+and forced-crash recreation gates passed on the recorded development runtime
+and the reviewed fixed minimum.
+
+## Reviewed fixed-runtime identity
+
+The newest Win32 interface used by the native hardening probe is
+`ICoreWebView2Profile7`, whose API compatibility floor is Runtime
+`120.0.2210.55`. That 2023 runtime is no longer in Microsoft's public Fixed
+Version support window and is not an acceptable 2026 browser-engine support
+baseline. The versioned manifest therefore records the API floor separately
+from the supported minimum: the older of the two Fixed Version releases
+Microsoft offered at review time, x64 `149.0.4022.98`.
+
+The committed manifest pins the official Microsoft download page and CDN URL,
+CAB name, byte length and SHA-256, expanded directory name, file count, total
+bytes and a domain-separated tree SHA-256, plus the browser executable's
+digest, version, signer subject, and certificate thumbprint. The tree hash
+sorts UTF-8 relative file names ordinally and hashes each name length, name,
+file length, and complete file body. Native startup rejects a wrong package
+name, architecture, count, size, digest, reparse point, excessive path shape,
+or `Edge\Application` path. The PowerShell runner independently checks the
+archive and Authenticode evidence before launch.
+
+The forced-crash child does not inherit Tauri's browser-folder environment
+value. Its parent removes all WebView2 override variables and passes only the
+non-secret reviewed runtime path; the child repeats the complete package
+verification and lets its own Tauri context inject the exact path. A fixed
+report closes `fixed_minimum_webview2` only when the actual loaded version is
+exactly the supported minimum and both the runtime identity and environment
+selection match. Arbitrary `--fixed-runtime` paths cannot close the gate.
 
 ## Resolver evidence
 
@@ -189,10 +224,11 @@ The WebView-specific invariant comes from
 and Chromium's source-level rule to
 [`Always treat .localhost as loopback`](https://chromium.googlesource.com/chromium/src/+/5d131a1fd9b808c5fd08c45f8299e669b13ec393%5E%21/);
 [WebView2 uses Microsoft Edge with Chromium bits](https://learn.microsoft.com/en-us/microsoft-edge/webview2/).
-The shell rejects environment and policy-registry overrides for the runtime,
-profile, channel, and browser arguments, and a system probe that actually
-observes a non-loopback result aborts before creating a WebView or sending
-`B`.
+The shell rejects untrusted environment and policy-registry overrides for the
+runtime, profile, channel, and browser arguments; reviewed fixed mode permits
+only Tauri's exact verified runtime-folder injection. A system probe that
+actually observes a non-loopback result aborts before creating a WebView or
+sending `B`.
 
 Because the proxy listens only on loopback, rejects non-loopback peers, and
 requires the exact random `Host`, successful authenticated loading is
@@ -408,6 +444,8 @@ WebView2 report records the evidence under `websocket_rate_limits`; its
 The recorded WebView2 `150.0.4078.99` debug and release runs both measured
 997 ms client-to-upstream and 934 ms upstream-to-client, with all 3 handshakes
 valid and normalized and no credential leakage.
+The reviewed Fixed Version Runtime `149.0.4022.98` measured 1,007/934 ms in
+Debug and 1,006/921 ms in Release with the same 3/3 and zero-leak result.
 
 ## Evidence and release boundary
 
@@ -417,23 +455,26 @@ subresource, fetch, streaming, WebSocket, child-host, external-redirect,
 cleanup, and secret-leakage behavior. Its JSON output contains only versions,
 hostnames, booleans, counts, and route names.
 
-A passing development report is not Phase 1 release readiness. The complete
-matrix must still pass on a reviewed fixed minimum WebView2 runtime. The
-active browser-escape matrix passed on the recorded development runtime:
-one external document was blocked before network, one popup and one download
-were denied, the one native external-scheme event was cancelled without
-launching its verified canary handler, and the volatile registration was
-removed. Native settings and extension rejection were verified, override
+The development report intentionally retains the `fixed_minimum_webview2`
+gap and is not by itself a Phase 1 release claim. The complete matrix now also
+passes in Debug and Release on the exact reviewed Fixed Version Runtime
+`149.0.4022.98`. Both fixed reports record the loaded version, manifest and
+tree identities, exact trusted environment selection, all development gates,
+an empty `unproven_release_gates`, and `phase1_release_ready: true`. The active
+browser-escape matrix blocked one external document before network, denied one
+popup and one download, cancelled the one native external-scheme event without
+launching its verified canary handler, and removed the volatile registration.
+Native settings and extension rejection were verified, untrusted override
 sources were absent, and no `DevToolsActivePort` or external collector request
-was produced. The cross-process forced-crash profile matrix also passed; the
-only remaining Phase 1 release gate is the fixed-minimum runtime.
+was produced. The cross-process forced-crash profile matrix also passed on
+both runtime modes.
 Authenticated request-upload byte/idle/rate/total/trailer limits, encoded and
 decoded response byte limits, response idle/rate/content-decoding limits,
 exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
 WebSocket activity-idle shutdown, and independent bidirectional WebSocket
-byte-rate backpressure are tested on the development environment. Protocol-2 R
-launcher ownership and Windows Job Objects are Phase 2 work.
+byte-rate backpressure are tested on both runtime modes. Protocol-2 R launcher
+ownership and Windows Job Objects are Phase 2 work.
 
 ## Maintainer rules
 

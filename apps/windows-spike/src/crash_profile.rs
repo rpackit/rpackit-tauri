@@ -25,7 +25,7 @@ use tauri::{
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-use crate::{HarnessError, native_webview, report::CrashProfileEvidence};
+use crate::{HarnessError, fixed_runtime, native_webview, report::CrashProfileEvidence};
 
 pub(crate) const PRODUCER_ARGUMENT: &str = "--crash-profile-producer";
 
@@ -46,8 +46,9 @@ const READY_MARKER_MAX_BYTES: u64 = 128;
 
 #[derive(Debug)]
 pub(crate) struct CrashProducerOptions {
-    profile_path: PathBuf,
-    ready_path: PathBuf,
+    profile: PathBuf,
+    ready: PathBuf,
+    fixed_runtime: Option<PathBuf>,
 }
 
 impl CrashProducerOptions {
@@ -60,13 +61,26 @@ impl CrashProducerOptions {
             return Err(());
         }
         let ready_path = arguments.next().map(PathBuf::from).ok_or(())?;
-        if arguments.next().is_some() {
-            return Err(());
-        }
+        let fixed_runtime_path = match arguments.next() {
+            Some(argument) if argument == fixed_runtime::FIXED_RUNTIME_ARGUMENT => {
+                let path = arguments.next().map(PathBuf::from).ok_or(())?;
+                if arguments.next().is_some() {
+                    return Err(());
+                }
+                Some(path)
+            }
+            Some(_) => return Err(()),
+            None => None,
+        };
         Ok(Self {
-            profile_path,
-            ready_path,
+            profile: profile_path,
+            ready: ready_path,
+            fixed_runtime: fixed_runtime_path,
         })
+    }
+
+    pub(crate) fn fixed_runtime_path(&self) -> Option<&Path> {
+        self.fixed_runtime.as_deref()
     }
 }
 
@@ -137,17 +151,18 @@ struct RecreationOutcome {
 pub(crate) async fn run_producer(
     app: AppHandle<Wry>,
     options: CrashProducerOptions,
+    runtime_selection: fixed_runtime::RuntimeSelection,
 ) -> Result<i32, HarnessError> {
-    if !probe_paths_are_strictly_scoped(&options.profile_path, &options.ready_path) {
+    if !probe_paths_are_strictly_scoped(&options.profile, &options.ready) {
         return Err(io::Error::other("crash-profile producer paths are not safely scoped").into());
     }
-    crate::reject_webview_environment_overrides()?;
+    runtime_selection.verify_configured_environment()?;
     if !crate::webview_registry_overrides_absent()? {
         return Err(io::Error::other("WebView2 registry override is not allowed").into());
     }
 
     let root = options
-        .profile_path
+        .profile
         .parent()
         .ok_or_else(|| io::Error::other("crash-profile probe root is missing"))?;
     let exit_sentinel = CrashExitSentinel {
@@ -158,8 +173,7 @@ pub(crate) async fn run_producer(
         9,
     )))?)
     .await?;
-    let (window, cookie_verified) =
-        build_producer_window(&app, &proxy, options.profile_path).await?;
+    let (window, cookie_verified) = build_producer_window(&app, &proxy, options.profile).await?;
     let cookie_verified = timeout(PRODUCER_READY_TIMEOUT, cookie_verified)
         .await
         .map_err(|_| io::Error::other("crash-profile producer cookie readback timed out"))?
@@ -169,7 +183,7 @@ pub(crate) async fn run_producer(
     }
 
     sleep(PRODUCER_COOKIE_SETTLE_DURATION).await;
-    write_ready_marker(&options.ready_path, proxy.address().hostname())?;
+    write_ready_marker(&options.ready, proxy.address().hostname())?;
     std::future::pending::<()>().await;
 
     drop(window);
@@ -178,21 +192,28 @@ pub(crate) async fn run_producer(
     Ok(0)
 }
 
-pub(crate) async fn probe(app: &AppHandle<Wry>) -> CrashProfileEvidence {
+pub(crate) async fn probe(
+    app: &AppHandle<Wry>,
+    runtime_selection: &fixed_runtime::RuntimeSelection,
+) -> CrashProfileEvidence {
     let Ok(directory) = tempfile::Builder::new()
         .prefix(PROBE_DIRECTORY_PREFIX)
         .tempdir()
     else {
         return CrashProfileEvidence::default();
     };
-    let mut evidence = probe_in_directory(app, directory.path()).await;
+    let mut evidence = probe_in_directory(app, directory.path(), runtime_selection).await;
     sleep(PROFILE_RELEASE_INITIAL_DELAY).await;
     evidence.crash_profile_directory_removed = directory.close().is_ok();
     evidence.probe_completed = true;
     evidence
 }
 
-async fn probe_in_directory(app: &AppHandle<Wry>, root: &Path) -> CrashProfileEvidence {
+async fn probe_in_directory(
+    app: &AppHandle<Wry>,
+    root: &Path,
+    runtime_selection: &fixed_runtime::RuntimeSelection,
+) -> CrashProfileEvidence {
     let mut evidence = CrashProfileEvidence::default();
     let profile_path = root.join(PROFILE_DIRECTORY_NAME);
     let ready_path = root.join(READY_FILE_NAME);
@@ -206,26 +227,28 @@ async fn probe_in_directory(app: &AppHandle<Wry>, root: &Path) -> CrashProfileEv
         return evidence;
     }
 
-    let arguments = [
+    let mut arguments = vec![
         OsString::from(PRODUCER_ARGUMENT),
         OsString::from(PROFILE_ARGUMENT),
         profile_path.as_os_str().to_owned(),
         OsString::from(READY_ARGUMENT),
         ready_path.as_os_str().to_owned(),
     ];
+    runtime_selection.append_child_arguments(&mut arguments);
     evidence.producer_received_no_secret_input = arguments
         .iter()
         .all(|argument| !argument.to_string_lossy().contains("rp-"));
     let Ok(executable) = std::env::current_exe() else {
         return evidence;
     };
-    let Ok(child) = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+        .stderr(Stdio::null());
+    fixed_runtime::RuntimeSelection::scrub_child_environment(&mut command);
+    let Ok(child) = command.spawn() else {
         return evidence;
     };
     evidence.producer_spawned = true;

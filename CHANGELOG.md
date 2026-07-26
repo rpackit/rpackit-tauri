@@ -113,6 +113,25 @@ All notable changes to this pre-release repository are documented here.
   0.62.
 - Updated pinned GitHub Actions to their Node 24 releases and bounded CI job
   durations.
+- Added a versioned reviewed Fixed Version Runtime manifest that separates the
+  historical WebView2 API floor (`120.0.2210.55`) from the supported x64
+  minimum (`149.0.4022.98`). It pins the official Microsoft source, CAB size
+  and SHA-256, expanded 259-file tree size and domain-separated SHA-256,
+  executable digest/version, signer subject, and certificate thumbprint.
+- Added fail-closed native fixed-runtime verification and runtime evidence.
+  Startup rejects ambient WebView2 overrides, unsafe/reparse paths, wrong
+  architecture or package shape, and every content mismatch before changing
+  the in-memory Tauri context to `FixedRuntime`. The forced-crash child
+  receives only the non-secret reviewed path after all inherited WebView2
+  overrides are removed, repeats verification, and independently configures
+  Tauri. The report closes `fixed_minimum_webview2` only when the actual loaded
+  version exactly matches the supported minimum.
+- Added a fixed-runtime PowerShell runner that downloads the CAB from the
+  pinned Microsoft CDN URL, verifies the archive and Authenticode evidence,
+  runs Debug and Release with the repository Cargo target, validates both
+  secret-free reports, and deletes its temporary 294 MB archive and 667 MB
+  extracted runtime. CI now runs and uploads both fixed reports in addition to
+  the development-runtime report.
 - Added deterministic mock-upstream tests for bootstrap replay, malformed
   requests, Origin checks, redirects/cookies, WebSocket behavior,
   cross-instance isolation, hostname classification, and credential leakage.
@@ -168,10 +187,15 @@ All notable changes to this pre-release repository are documented here.
   termination, absence after same-profile recreation, bypass of graceful
   cleanup, and complete profile removal with no secret-shaped report content.
   This is not a fixed-minimum or release-readiness claim.
+- Recorded passing Debug and Release matrices on the exact reviewed Fixed
+  Version Runtime `149.0.4022.98`. Both reports verified the committed
+  manifest and expanded tree, loaded the exact runtime, passed every
+  development and forced-crash/browser-escape gate, contained no secret
+  shape, had zero unproven gates, and set `phase1_release_ready` to true.
+  WebSocket shaping measured 1,007/934 ms in Debug and 1,006/921 ms in
+  Release, with 3/3 valid normalized handshakes and no credential leakage.
 
 ### Known pre-release gaps
 
-- The full matrix has not run against a reviewed fixed minimum WebView2
-  runtime.
 - Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
   are Phase 2 work.
