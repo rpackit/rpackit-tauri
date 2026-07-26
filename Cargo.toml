@@ -1,11 +1,13 @@
 [workspace]
 members = [
   "apps/windows-spike",
+  "crates/launcher-protocol",
   "crates/transport",
   "crates/transport-testkit",
   "crates/windows-launcher",
 ]
 default-members = [
+  "crates/launcher-protocol",
   "crates/transport",
   "crates/transport-testkit",
 ]

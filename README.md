@@ -187,11 +187,23 @@ assignment before execution; rejection of an attempted breakaway child;
 exclusion of an unrelated inheritable handle; and removal of both a wrapper
 and its descendant when the Job closes.
 
+`crates/launcher-protocol` provides the safe protocol-2 boundary shared by
+later lifecycle owners. Its streaming decoder bounds every stdout line,
+discards non-prefixed output without retaining its content, rejects malformed
+JSON, duplicate or unknown fields, wrong protocol versions, weak host/token
+claims, and partial final lines, then permanently poisons itself after a hard
+failure. Its state tracker requires one matching
+`starting -> listening -> stopping? -> stopped` sequence with a stable
+positive runtime PID, selected port, and exact graceful-stop policy; `error`
+is terminal. Error display text is length-bounded and control characters are
+collapsed.
+
 This is deliberately not a full Phase 2 claim. Bundle/manifest validation,
-private session-directory DACLs, one-time `S` token-file handling, protocol-2
-NDJSON readiness, create-time-aware runtime-PID and listener ownership,
-graceful control-file shutdown, and integration with `hello-shiny` remain
-required before Phase 2 can be marked complete.
+private session-directory DACLs, one-time `S` token-file handling, wiring the
+decoder to the real R lifecycle pipes, create-time-aware runtime-PID and
+listener ownership, authenticated readiness, graceful control-file shutdown,
+and integration with `hello-shiny` remain required before Phase 2 can be
+marked complete.
 
 ## Development
 

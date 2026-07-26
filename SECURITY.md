@@ -44,9 +44,11 @@ process-owner layer is implemented and tested separately: it creates the
 wrapper suspended, allowlists only lifecycle-pipe handles, assigns it to an
 unnamed non-inheritable kill-on-close Job with both breakaway policies
 disabled, verifies PID/creation-time identity and Job membership, and resumes
-only after those gates pass. This evidence does not yet cover protocol-2
-readiness, the real R runtime PID/listener, private credential files, or
-graceful close.
+only after those gates pass. A separate safe decoder bounds protocol-2 stdout,
+rejects ambiguous or weakened event objects, and enforces a terminal lifecycle
+sequence with stable PID and port. This evidence does not yet cover connecting
+that decoder to a real R launch, authenticated readiness, the runtime
+PID/listener identity, private credential files, or graceful close.
 
 The newest WebView2 API used by the harness has a historical compatibility
 floor of `120.0.2210.55`, but that obsolete runtime is neither publicly

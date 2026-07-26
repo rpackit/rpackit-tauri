@@ -1,0 +1,17 @@
+[package]
+name = "rpackit-launcher-protocol"
+description = "Bounded protocol-2 lifecycle event decoding for rpackit launchers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

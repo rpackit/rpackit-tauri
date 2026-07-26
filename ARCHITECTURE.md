@@ -19,7 +19,8 @@ ownership and readiness.
 | --- | --- | --- |
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
 | `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
-| `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process identity, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol parsing, listener ownership, browser lifecycle |
+| `crates/launcher-protocol` | Bounded protocol-2 NDJSON decoding, exact event validation, noise accounting and lifecycle sequence tracking | Process creation, secret handling, readiness network requests, untrusted output retention |
+| `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process identity, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, listener ownership, browser lifecycle |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
@@ -53,11 +54,14 @@ environment is inherited, so callers must never place `S`, `P`, or `B` there.
 The later lifecycle owner will pass only a private token-file path—not `S`
 itself—in the R launcher arguments.
 
-The remaining Phase 2 layers validate schema-1/protocol-2 resources, create
-the private per-launch DACL and credential/control files, parse the prefixed
-NDJSON event stream, open and compare the runtime PID by creation time,
-validate Job/listener ownership, authenticate readiness, and perform bounded
-graceful shutdown before forced Job termination.
+The separate safe protocol crate already bounds and parses the prefixed NDJSON
+stream and validates event ordering, fixed loopback/token claims, the selected
+port, and stable runtime PID. The remaining Phase 2 layers validate
+schema-1/protocol-2 resources, create the private per-launch DACL and
+credential/control files, drive that decoder from the real pipe, open and
+compare the runtime PID by creation time, validate Job/listener ownership,
+authenticate readiness, and perform bounded graceful shutdown before forced
+Job termination.
 
 ## Secret and origin model
 

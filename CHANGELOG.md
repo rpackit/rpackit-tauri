@@ -18,9 +18,14 @@ All notable changes to this pre-release repository are documented here.
   lifecycle tests for quoting, policy and identity, attempted breakaway,
   unrelated inheritable-handle exclusion, and kill-on-close removal of a
   wrapper and descendant.
+- Added a cross-platform, bounded protocol-2 NDJSON decoder and lifecycle
+  tracker. It rejects duplicate/unknown fields, wrong versions, weakened
+  loopback or token claims, line overflow/truncation, PID/port changes,
+  impossible transitions, and events after a terminal state.
 - Kept the Phase 2 boundary explicit: bundle validation, private DACL/token
-  files, protocol-2 readiness, runtime PID/listener identity, graceful close,
-  and real `hello-shiny` integration remain in progress.
+  files, real-pipe orchestration and authenticated readiness, runtime
+  PID/listener identity, graceful close, and `hello-shiny` integration remain
+  in progress.
 
 ### Transport contract version 2
 
