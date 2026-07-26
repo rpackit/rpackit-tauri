@@ -278,9 +278,16 @@ pub async fn probe_listener_overlap(proxy: &RunningProxy) -> io::Result<Listener
 }
 
 /// Return unproven evidence when the Windows-only probe is compiled elsewhere.
+///
+/// # Errors
+///
+/// This non-Windows stub cannot fail; the `Result` keeps the cross-platform
+/// call site identical to the Windows probe.
 #[cfg(not(windows))]
-pub async fn probe_listener_overlap(_proxy: &RunningProxy) -> io::Result<ListenerOverlapEvidence> {
-    Ok(ListenerOverlapEvidence::default())
+pub fn probe_listener_overlap(
+    _proxy: &RunningProxy,
+) -> std::future::Ready<io::Result<ListenerOverlapEvidence>> {
+    std::future::ready(Ok(ListenerOverlapEvidence::default()))
 }
 
 #[cfg(windows)]
