@@ -46,9 +46,11 @@ unnamed non-inheritable kill-on-close Job with both breakaway policies
 disabled, verifies PID/creation-time identity and Job membership, and resumes
 only after those gates pass. A separate safe decoder bounds protocol-2 stdout,
 rejects ambiguous or weakened event objects, and enforces a terminal lifecycle
-sequence with stable PID and port. This evidence does not yet cover connecting
-that decoder to a real R launch, authenticated readiness, the runtime
-PID/listener identity, private credential files, or graceful close.
+sequence with stable PID and port. The process layer can retain a
+non-inheritable PID-plus-creation-time handle only after confirming the live
+process belongs to the owned Job. This evidence does not yet cover connecting
+the decoder and PID capture to a real R launch, authenticated readiness,
+listener ownership, private credential files, or graceful close.
 
 The newest WebView2 API used by the harness has a historical compatibility
 floor of `120.0.2210.55`, but that obsolete runtime is neither publicly

@@ -42,6 +42,14 @@ through its exact process handle. Native state records both PID and Windows
 creation time. Only an observed member with the expected one-count suspension
 is resumed.
 
+After a validated event reports a runtime PID, the same native layer can open
+that PID with query/synchronize rights and handle inheritance disabled. It
+rejects zero, a process already signaled, or a process outside the owned Job,
+reads creation time from the exact open handle, checks membership, and checks
+liveness again before returning. Keeping this handle fixes the observed
+identity across later numeric PID reuse; listener ownership must still be
+proved against that same captured process.
+
 If assignment fails, `TerminateProcess` runs while the primary thread is still
 suspended and a bounded wait follows. Any later pre-resume failure terminates
 the assigned Job. The owning Rust value retains both Job and wrapper handles;
@@ -59,9 +67,9 @@ stream and validates event ordering, fixed loopback/token claims, the selected
 port, and stable runtime PID. The remaining Phase 2 layers validate
 schema-1/protocol-2 resources, create the private per-launch DACL and
 credential/control files, drive that decoder from the real pipe, open and
-compare the runtime PID by creation time, validate Job/listener ownership,
-authenticate readiness, and perform bounded graceful shutdown before forced
-Job termination.
+retain the reported runtime identity through the existing capture API,
+validate listener ownership, authenticate readiness, and perform bounded
+graceful shutdown before forced Job termination.
 
 ## Secret and origin model
 

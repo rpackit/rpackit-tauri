@@ -32,9 +32,10 @@ use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-    GetProcessTimes, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    GetProcessTimes, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
@@ -111,6 +112,44 @@ pub struct JobProcess {
     identity: ProcessIdentity,
 }
 
+/// A create-time-aware handle for one live process verified in the launch Job.
+///
+/// Holding this handle prevents the represented process identity from being
+/// confused with a later reuse of the same numeric PID.
+#[derive(Debug)]
+pub struct JobMemberProcess {
+    process: OwnedHandle,
+    identity: ProcessIdentity,
+}
+
+impl JobMemberProcess {
+    /// Returns the exact PID and creation time captured from the process handle.
+    #[must_use]
+    pub const fn identity(&self) -> ProcessIdentity {
+        self.identity
+    }
+
+    /// Returns whether the exact captured process is still running.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Windows cannot query the process handle.
+    pub fn is_alive(&self) -> Result<bool, LaunchError> {
+        process_is_alive(&self.process)
+    }
+
+    /// Waits up to `timeout` for the exact captured process to exit.
+    ///
+    /// Returns `Ok(None)` on timeout and `Ok(Some(code))` after termination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process wait or exit-code query fails.
+    pub fn wait(&self, timeout: Duration) -> Result<Option<u32>, LaunchError> {
+        wait_for_process(&self.process, timeout)
+    }
+}
+
 impl JobProcess {
     /// Returns the PID and creation timestamp of the exact wrapper process.
     #[must_use]
@@ -166,6 +205,46 @@ impl JobProcess {
         query_job_policy(&self.job)
     }
 
+    /// Captures a live create-time-aware handle for a reported Job member PID.
+    ///
+    /// The returned handle is non-inheritable and remains tied to the exact
+    /// process even if Windows later reuses its numeric PID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for PID zero, an inaccessible or exited process, a
+    /// process outside this launch's Job, or a native identity query failure.
+    pub fn capture_job_member(&self, pid: u32) -> Result<JobMemberProcess, LaunchError> {
+        if pid == 0 {
+            return Err(LaunchError::InvalidProcessId);
+        }
+        // SAFETY: OpenProcess validates the PID and returns one new
+        // non-inheritable handle on success.
+        let raw_process = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )
+        }
+        .map_err(|error| api_error("OpenProcess", &error))?;
+        // SAFETY: OpenProcess returned a new owned handle, transferred once.
+        let process = unsafe { owned_handle(raw_process) };
+
+        if !process_is_alive(&process)? {
+            return Err(LaunchError::ProcessAlreadyExited);
+        }
+        let identity = process_identity(&process, pid)?;
+        if !process_is_in_job(&process, &self.job)? {
+            return Err(LaunchError::ProcessOutsideJob);
+        }
+        if !process_is_alive(&process)? {
+            return Err(LaunchError::ProcessAlreadyExited);
+        }
+
+        Ok(JobMemberProcess { process, identity })
+    }
+
     /// Takes the read side of the child's standard-output lifecycle pipe.
     pub fn take_stdout(&mut self) -> Option<File> {
         self.stdout.take()
@@ -184,22 +263,7 @@ impl JobProcess {
     ///
     /// Returns an error if the process wait or exit-code query fails.
     pub fn wait(&self, timeout: Duration) -> Result<Option<u32>, LaunchError> {
-        let milliseconds = duration_milliseconds(timeout);
-        // SAFETY: The process handle is owned and valid for the wait.
-        let result = unsafe { WaitForSingleObject(raw_handle(&self.process), milliseconds) };
-        if result == WAIT_TIMEOUT {
-            return Ok(None);
-        }
-        if result != WAIT_OBJECT_0 {
-            return Err(LaunchError::UnexpectedWaitResult(result.0));
-        }
-
-        let mut exit_code = 0_u32;
-        // SAFETY: The process has signaled, its handle is valid, and
-        // `exit_code` is writable for the duration of the call.
-        unsafe { GetExitCodeProcess(raw_handle(&self.process), &raw mut exit_code) }
-            .map_err(|error| api_error("GetExitCodeProcess", &error))?;
-        Ok(Some(exit_code))
+        wait_for_process(&self.process, timeout)
     }
 
     /// Terminates every process in the owned Job.
@@ -579,6 +643,38 @@ fn process_is_in_job(process: &OwnedHandle, job: &OwnedHandle) -> Result<bool, L
     Ok(result.as_bool())
 }
 
+fn process_is_alive(process: &OwnedHandle) -> Result<bool, LaunchError> {
+    // SAFETY: The process handle is owned and valid for the zero-duration
+    // observation.
+    let result = unsafe { WaitForSingleObject(raw_handle(process), 0) };
+    if result == WAIT_TIMEOUT {
+        return Ok(true);
+    }
+    if result == WAIT_OBJECT_0 {
+        return Ok(false);
+    }
+    Err(LaunchError::UnexpectedWaitResult(result.0))
+}
+
+fn wait_for_process(process: &OwnedHandle, timeout: Duration) -> Result<Option<u32>, LaunchError> {
+    let milliseconds = duration_milliseconds(timeout);
+    // SAFETY: The process handle is owned and valid for the wait.
+    let result = unsafe { WaitForSingleObject(raw_handle(process), milliseconds) };
+    if result == WAIT_TIMEOUT {
+        return Ok(None);
+    }
+    if result != WAIT_OBJECT_0 {
+        return Err(LaunchError::UnexpectedWaitResult(result.0));
+    }
+
+    let mut exit_code = 0_u32;
+    // SAFETY: The process has signaled, its handle is valid, and `exit_code`
+    // is writable for the duration of the call.
+    unsafe { GetExitCodeProcess(raw_handle(process), &raw mut exit_code) }
+        .map_err(|error| api_error("GetExitCodeProcess", &error))?;
+    Ok(Some(exit_code))
+}
+
 fn terminate_suspended_process(process: &OwnedHandle) {
     // SAFETY: The process handle is valid. Errors are intentionally ignored
     // during fail-closed cleanup; closing handles follows immediately.
@@ -716,6 +812,15 @@ pub enum LaunchError {
     /// The newly created process was not observed in the configured Job.
     #[error("the suspended launcher was not assigned to the owned Job")]
     JobMembershipNotEstablished,
+    /// A reported process identifier cannot be zero.
+    #[error("the reported process identifier was zero")]
+    InvalidProcessId,
+    /// The reported process had already exited during identity capture.
+    #[error("the reported process exited before identity capture completed")]
+    ProcessAlreadyExited,
+    /// The reported process did not belong to this launch's Job.
+    #[error("the reported process was outside the owned Job")]
+    ProcessOutsideJob,
     /// The Job handle unexpectedly allowed inheritance.
     #[error("the Job handle is inheritable")]
     InheritableJobHandle,

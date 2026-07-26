@@ -10,7 +10,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rpackit_windows_launcher::{LaunchCommand, launch};
+use rpackit_windows_launcher::{LaunchCommand, LaunchError, launch};
 use tempfile::tempdir;
 use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
@@ -111,8 +111,25 @@ fn dropping_job_kills_wrapper_and_descendant() -> Result<(), Box<dyn std::error:
 
     assert_eq!(pids.len(), 2);
     assert!(pids.iter().all(|pid| process_is_running(*pid)));
+    assert!(matches!(
+        process.capture_job_member(0),
+        Err(LaunchError::InvalidProcessId)
+    ));
+    assert!(matches!(
+        process.capture_job_member(std::process::id()),
+        Err(LaunchError::ProcessOutsideJob)
+    ));
+    let wrapper = process.capture_job_member(pids[0])?;
+    let descendant = process.capture_job_member(pids[1])?;
+    assert_eq!(wrapper.identity(), process.identity());
+    assert_eq!(descendant.identity().pid, pids[1]);
+    assert_ne!(descendant.identity().creation_time_100ns, 0);
+    assert!(wrapper.is_alive()?);
+    assert!(descendant.is_alive()?);
     drop(process);
 
+    assert!(wrapper.wait(Duration::from_secs(10))?.is_some());
+    assert!(descendant.wait(Duration::from_secs(10))?.is_some());
     for pid in pids {
         assert!(
             wait_until_not_running(pid, Duration::from_secs(10)),

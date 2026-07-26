@@ -14,6 +14,9 @@ All notable changes to this pre-release repository are documented here.
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, exact policy readback, no breakaway
   flags, suspended assignment, process creation-time identity, membership
   verification, and resume only after all gates pass.
+- Added live Job-member capture for a protocol-reported runtime PID. The
+  non-inheritable handle records creation time, rejects zero/exited/outside-Job
+  processes, and remains tied to the exact identity across later PID reuse.
 - Added fail-before-execution cleanup for failed Job assignment plus native
   lifecycle tests for quoting, policy and identity, attempted breakaway,
   unrelated inheritable-handle exclusion, and kill-on-close removal of a
