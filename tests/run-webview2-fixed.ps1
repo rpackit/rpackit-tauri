@@ -100,7 +100,34 @@ function Remove-VerifiedRuntimeWorkDirectory {
     ) {
         throw "Refusing to remove an unverified runtime work directory."
     }
-    [System.IO.Directory]::Delete($resolved, $true)
+
+    # WebView2 subprocesses can release runtime DLL mappings shortly after the
+    # harness process exits. Keep cleanup bounded and fail the matrix if the
+    # verified temporary tree still cannot be removed after the grace period.
+    $attemptLimit = 30
+    for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+        try {
+            [System.IO.Directory]::Delete($resolved, $true)
+            return
+        }
+        catch [System.UnauthorizedAccessException] {
+            if (-not [System.IO.Directory]::Exists($resolved)) {
+                return
+            }
+            if ($attempt -eq $attemptLimit) {
+                throw
+            }
+        }
+        catch [System.IO.IOException] {
+            if (-not [System.IO.Directory]::Exists($resolved)) {
+                return
+            }
+            if ($attempt -eq $attemptLimit) {
+                throw
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
 }
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
