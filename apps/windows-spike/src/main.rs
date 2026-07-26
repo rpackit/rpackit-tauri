@@ -39,7 +39,10 @@ use tokio::time::timeout;
 use url::Url;
 use winreg::{
     RegKey,
-    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY},
+    enums::{
+        HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
+        KEY_WOW64_64KEY,
+    },
 };
 
 type HarnessError = Box<dyn StdError + Send + Sync>;
@@ -63,6 +66,17 @@ const WEBVIEW2_OVERRIDE_POLICY_KEYS: &[&str] = &[
     r"Software\Policies\Microsoft\Edge\WebView2\ReleaseChannelPreference",
 ];
 const WEBVIEW2_APP_USER_MODEL_ID: &str = "dev.rpackit.transport-spike";
+const PAGE_EXTERNAL_SCHEME_PROBE_URI: &str = "mailto:rpackit-browser-escape@example.invalid";
+const EXTERNAL_SCHEME_PROBE_CANDIDATES: &[(&str, &str)] = &[
+    ("ms-settings", "ms-settings:display"),
+    ("search-ms", "search-ms:query=rpackit-browser-escape"),
+    (
+        "microsoft-edge",
+        "microsoft-edge:https://example.invalid/rpackit-browser-escape",
+    ),
+    ("ms-windows-store", "ms-windows-store://home"),
+    ("mailto", PAGE_EXTERNAL_SCHEME_PROBE_URI),
+];
 const EXTENSION_PROBE_MANIFEST: &str =
     r#"{"manifest_version":3,"name":"rpackit disabled-extension probe","version":"1.0.0"}"#;
 const PROFILE_SCAN_ENTRY_LIMIT: usize = 100_000;
@@ -134,6 +148,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     if !registry_overrides_absent_before_creation {
         return Err(io::Error::other("WebView2 registry override is not allowed").into());
     }
+    let external_scheme_probe_uris = registered_external_scheme_probe_uris()?;
 
     let malformed_upstream = probe_malformed_upstream_response_heads().await?;
     let malformed_upstream_bodies = probe_malformed_upstream_response_bodies().await?;
@@ -176,6 +191,7 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
         &app,
         &proxy,
         collector.address(),
+        external_scheme_probe_uris.clone(),
         profile_path.clone(),
         extension_probe_directory.path().to_path_buf(),
         download_probe_directory.path().to_path_buf(),
@@ -190,7 +206,24 @@ async fn run_harness(app: AppHandle<Wry>, options: HarnessOptions) -> Result<i32
     update_evidence(&evidence, |item| {
         item.browser_report_received = browser_report_received;
     });
-    native_webview::attempt_external_scheme(&window, Arc::clone(&browser_escape_probe))?;
+    for uri in external_scheme_probe_uris {
+        let native_events_before = browser_escape_probe.external_scheme_native_event_count();
+        native_webview::attempt_external_scheme(&window, Arc::clone(&browser_escape_probe), uri)?;
+        if timeout(Duration::from_secs(1), async {
+            loop {
+                if browser_escape_probe.external_scheme_native_event_count() > native_events_before
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_ok()
+        {
+            break;
+        }
+    }
     let browser_escape_probe_completed = timeout(Duration::from_secs(5), async {
         loop {
             if browser_escape_probe.runtime_attempts_observed() {
@@ -333,6 +366,7 @@ async fn build_window(
     app: &AppHandle<Wry>,
     proxy: &RunningProxy,
     collector_address: SocketAddr,
+    external_scheme_probe_uris: Vec<Url>,
     profile_path: PathBuf,
     extension_probe_path: PathBuf,
     download_probe_path: PathBuf,
@@ -358,12 +392,17 @@ async fn build_window(
     let native_browser_escape_probe = Arc::clone(&browser_escape_probe);
     let native_allowed_proxy_origin = root_url.clone();
     let native_navigation_escape_url = navigation_escape_url.clone();
+    let native_external_scheme_probe_uris = external_scheme_probe_uris
+        .iter()
+        .map(|uri| uri.as_str().to_owned())
+        .collect();
     let page_bootstrap_queued = Arc::clone(&bootstrap_queued);
     main_thread_app.run_on_main_thread(move || {
         let navigation_host = expected_host.clone();
         let navigation_state = Arc::clone(&state);
         let navigation_escape = navigation_escape_url.clone();
         let navigation_escape_probe = Arc::clone(&browser_escape_probe);
+        let external_scheme_navigation_uris = external_scheme_probe_uris.clone();
         let popup_escape = popup_escape_url.clone();
         let popup_escape_probe = Arc::clone(&browser_escape_probe);
         let download_escape = download_escape_url.clone();
@@ -393,7 +432,11 @@ async fn build_window(
                 navigation_escape_probe.record_navigation_block();
                 return false;
             }
-            if url.as_str() == native_webview::EXTERNAL_SCHEME_PROBE_URI {
+            if url.as_str() == PAGE_EXTERNAL_SCHEME_PROBE_URI
+                || external_scheme_navigation_uris
+                    .iter()
+                    .any(|candidate| candidate == url)
+            {
                 return true;
             }
             let proxy_origin = url.scheme() == "http"
@@ -479,6 +522,7 @@ async fn build_window(
         Arc::clone(&native_browser_escape_probe),
         native_allowed_proxy_origin,
         native_navigation_escape_url,
+        native_external_scheme_probe_uris,
         extension_probe_path,
         download_probe_path,
     )?;
@@ -645,6 +689,31 @@ fn webview_registry_overrides_absent() -> io::Result<bool> {
     Ok(true)
 }
 
+fn registered_external_scheme_probe_uris() -> io::Result<Vec<Url>> {
+    let classes = RegKey::predef(HKEY_CLASSES_ROOT);
+    external_scheme_probe_uris(|scheme| registry_value_exists(&classes, 0, scheme, "URL Protocol"))
+}
+
+fn external_scheme_probe_uris(
+    mut is_registered: impl FnMut(&str) -> io::Result<bool>,
+) -> io::Result<Vec<Url>> {
+    let mut uris = Vec::new();
+    for (scheme, uri) in EXTERNAL_SCHEME_PROBE_CANDIDATES {
+        if is_registered(scheme)? {
+            uris.push(
+                Url::parse(uri)
+                    .map_err(|_| io::Error::other("invalid external-scheme probe URI"))?,
+            );
+        }
+    }
+    if uris.is_empty() {
+        return Err(io::Error::other(
+            "no registered external URI scheme is available for the browser escape probe",
+        ));
+    }
+    Ok(uris)
+}
+
 fn webview_registry_app_ids(executable: &Path) -> Vec<String> {
     let mut app_ids = vec![WEBVIEW2_APP_USER_MODEL_ID.to_owned()];
     if let Some(file_name) = executable.file_name().and_then(|name| name.to_str()) {
@@ -775,6 +844,7 @@ mod tests {
     use std::{io, path::Path, sync::Arc};
 
     use rpackit_transport::{Secret, TransportSecrets};
+    use url::Url;
 
     use super::text_is_secret_free;
 
@@ -833,6 +903,25 @@ mod tests {
             failed.err().map(|error| error.kind()),
             Some(io::ErrorKind::PermissionDenied)
         );
+    }
+
+    #[test]
+    fn external_scheme_probe_uses_only_registered_candidates() {
+        let result = super::external_scheme_probe_uris(|scheme| {
+            Ok(matches!(scheme, "ms-settings" | "mailto"))
+        });
+        assert!(result.is_ok());
+        let uris = result.unwrap_or_default();
+        assert_eq!(
+            uris.iter().map(Url::as_str).collect::<Vec<_>>(),
+            [
+                "ms-settings:display",
+                "mailto:rpackit-browser-escape@example.invalid",
+            ]
+        );
+
+        let absent = super::external_scheme_probe_uris(|_| Ok(false));
+        assert!(absent.is_err());
     }
 
     #[test]

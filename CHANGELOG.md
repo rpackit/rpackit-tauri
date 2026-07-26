@@ -125,11 +125,15 @@ All notable changes to this pre-release repository are documented here.
   the document request to be replaced before network access, popup and
   download denial, cancellation of every observed external-scheme event, and
   an empty isolated download directory; and confirms zero escape requests at
-  external collectors. Native evidence reads back disabled devtools, browser
-  accelerators, and default context menus, actively requires a valid unpacked
-  extension install to fail with `ERROR_NOT_SUPPORTED`, rejects WebView2
-  environment and policy-registry overrides before bootstrap, repeats policy
-  checks after creation, and requires no `DevToolsActivePort` in the profile.
+  external collectors. The native scheme probe selects only protocols
+  registered with Windows and requires an event whose empty
+  `InitiatingOrigin` proves it came from native `Navigate`, avoiding a
+  dependency on an installed mail client. Native evidence reads back disabled
+  devtools, browser accelerators, and default context menus, actively requires
+  a valid unpacked extension install to fail with `ERROR_NOT_SUPPORTED`,
+  rejects WebView2 environment and policy-registry overrides before bootstrap,
+  repeats policy checks after creation, and requires no `DevToolsActivePort`
+  in the profile.
 - Recorded a passing development-runtime run on WebView2 `150.0.4078.99`,
   including the clean profile-recreation gate and the three-contender,
   four-path listener-overlap gate. All three wildcard binds succeeded while

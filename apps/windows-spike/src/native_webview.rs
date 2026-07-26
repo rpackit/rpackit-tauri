@@ -36,7 +36,6 @@ use windows::{
 };
 use zeroize::Zeroizing;
 
-pub(crate) const EXTERNAL_SCHEME_PROBE_URI: &str = "mailto:rpackit-browser-escape@example.invalid";
 const ERROR_NOT_SUPPORTED: u32 = 50;
 
 /// Apply native settings that Tauri does not expose as one auditable builder
@@ -48,6 +47,7 @@ pub fn install_browser_escape_guards(
     probe: Arc<BrowserEscapeProbe>,
     allowed_proxy_origin: Url,
     navigation_escape_url: Url,
+    external_scheme_probe_uris: Vec<String>,
     extension_path: PathBuf,
     download_directory: PathBuf,
 ) -> tauri::Result<()> {
@@ -133,9 +133,15 @@ pub fn install_browser_escape_guards(
                         let mut uri = PWSTR::null();
                         args.Uri(&raw mut uri)?;
                         let uri = take_pwstr(uri);
+                        let mut initiating_origin = PWSTR::null();
+                        args.InitiatingOrigin(&raw mut initiating_origin)?;
+                        let initiating_origin = take_pwstr(initiating_origin);
                         args.SetCancel(true)?;
                         external_probe.record_external_scheme_event(
-                            uri.eq_ignore_ascii_case(EXTERNAL_SCHEME_PROBE_URI),
+                            external_scheme_probe_uris
+                                .iter()
+                                .any(|expected| uri.eq_ignore_ascii_case(expected)),
+                            initiating_origin.is_empty(),
                             true,
                         );
                         Ok(())
@@ -199,6 +205,7 @@ fn document_origin_is_allowed(url: &Url, allowed_proxy_origin: &Url) -> bool {
 pub fn attempt_external_scheme(
     window: &WebviewWindow<Wry>,
     probe: Arc<BrowserEscapeProbe>,
+    uri: Url,
 ) -> tauri::Result<()> {
     window.with_webview(move |platform| {
         // SAFETY: Tauri dispatches this closure on the WebView UI thread, and
@@ -207,7 +214,7 @@ pub fn attempt_external_scheme(
             platform
                 .controller()
                 .CoreWebView2()
-                .and_then(|core| core.Navigate(&HSTRING::from(EXTERNAL_SCHEME_PROBE_URI)))
+                .and_then(|core| core.Navigate(&HSTRING::from(uri.as_str())))
         };
         probe.record_external_scheme_native_attempt(result.is_ok());
     })

@@ -49,6 +49,7 @@ pub(crate) struct BrowserEscapeProbe {
     external_scheme_native_attempt_queued: AtomicBool,
     external_scheme_events: AtomicU32,
     expected_external_scheme_events: AtomicU32,
+    external_scheme_native_events: AtomicU32,
     external_scheme_cancellations: AtomicU32,
     native_hardening_finished: AtomicBool,
     native_hardening_completed: AtomicBool,
@@ -86,20 +87,35 @@ impl BrowserEscapeProbe {
     }
 
     pub(crate) fn record_external_scheme_native_attempt(&self, queued: bool) {
-        self.external_scheme_native_attempt_queued
-            .store(queued, Ordering::SeqCst);
+        if queued {
+            self.external_scheme_native_attempt_queued
+                .store(true, Ordering::SeqCst);
+        }
     }
 
-    pub(crate) fn record_external_scheme_event(&self, expected: bool, cancelled: bool) {
+    pub(crate) fn record_external_scheme_event(
+        &self,
+        expected: bool,
+        native: bool,
+        cancelled: bool,
+    ) {
         self.external_scheme_events.fetch_add(1, Ordering::SeqCst);
         if expected {
             self.expected_external_scheme_events
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if native {
+            self.external_scheme_native_events
                 .fetch_add(1, Ordering::SeqCst);
         }
         if cancelled {
             self.external_scheme_cancellations
                 .fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    pub(crate) fn external_scheme_native_event_count(&self) -> u32 {
+        self.external_scheme_native_events.load(Ordering::SeqCst)
     }
 
     pub(crate) fn record_settings(
@@ -153,6 +169,7 @@ impl BrowserEscapeProbe {
                 .external_scheme_native_attempt_queued
                 .load(Ordering::SeqCst)
             && self.expected_external_scheme_events.load(Ordering::SeqCst) >= 1
+            && self.external_scheme_native_events.load(Ordering::SeqCst) >= 1
             && self.external_scheme_cancellations.load(Ordering::SeqCst)
                 == self.external_scheme_events.load(Ordering::SeqCst)
     }
@@ -183,6 +200,9 @@ impl BrowserEscapeProbe {
             external_scheme_events: self.external_scheme_events.load(Ordering::SeqCst),
             expected_external_scheme_events: self
                 .expected_external_scheme_events
+                .load(Ordering::SeqCst),
+            external_scheme_native_events: self
+                .external_scheme_native_events
                 .load(Ordering::SeqCst),
             external_scheme_cancellations: self
                 .external_scheme_cancellations
@@ -223,6 +243,7 @@ pub struct BrowserEscapeEvidence {
     pub external_scheme_native_attempt_queued: bool,
     pub external_scheme_events: u32,
     pub expected_external_scheme_events: u32,
+    pub external_scheme_native_events: u32,
     pub external_scheme_cancellations: u32,
     pub native_hardening_completed: bool,
     pub devtools_disabled: bool,
@@ -259,6 +280,7 @@ impl BrowserEscapeEvidence {
             && self.external_scheme_native_attempt_queued
             && self.external_scheme_events >= 1
             && self.expected_external_scheme_events == self.external_scheme_events
+            && self.external_scheme_native_events >= 1
             && self.external_scheme_cancellations == self.external_scheme_events
             && self.native_hardening_completed
             && self.devtools_disabled
@@ -1145,6 +1167,7 @@ mod tests {
             external_scheme_native_attempt_queued: true,
             external_scheme_events: 1,
             expected_external_scheme_events: 1,
+            external_scheme_native_events: 1,
             external_scheme_cancellations: 1,
             native_hardening_completed: true,
             devtools_disabled: true,

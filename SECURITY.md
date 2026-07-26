@@ -45,10 +45,12 @@ success is recorded but is not itself a failure, while an unexpected bind
 error fails closed.
 
 The real-browser escape matrix actively attempts external top-level
-navigation, popup creation, a download, and an external URI scheme. External
-documents are replaced with a local `403` before network access, popups and
-downloads are denied, every observed external-scheme launch is cancelled, and
-the isolated download directory must remain empty. Native readback requires
+navigation, popup creation, a download, and an external URI scheme. The native
+probe selects only schemes registered with Windows and requires a distinct
+native-origin scheme event. External documents are replaced with a local `403`
+before network access, popups and downloads are denied, every observed
+external-scheme launch is cancelled, and the isolated download directory must
+remain empty. Native readback requires
 devtools, browser accelerator keys, and default context menus disabled; a
 valid unpacked-extension install must be explicitly rejected as unsupported.
 The shell fails before bootstrap on WebView2 environment or policy-registry

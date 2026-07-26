@@ -142,13 +142,16 @@ never put in the report.
 
 The active browser matrix does not infer these controls from configuration.
 The page attempts an external document, popup, download, and `mailto:` launch;
-native code also queues the external-scheme attempt directly. The document
-request is replaced with a local `403` at `WebResourceRequested`, new windows
-are denied, downloads are cancelled into an isolated directory that must stay
-empty, and every `LaunchingExternalUriScheme` event is cancelled. Native
-readback requires devtools, browser accelerator keys, and default context
-menus to be disabled. A valid unpacked extension must fail installation with
-the Windows `ERROR_NOT_SUPPORTED` result.
+native code separately selects URI schemes registered with Windows and queues
+them directly until a native-origin event is observed. The document request is
+replaced with a local `403` at `WebResourceRequested`, new windows are denied,
+downloads are cancelled into an isolated directory that must stay empty, and
+every `LaunchingExternalUriScheme` event is cancelled. The event's empty
+`InitiatingOrigin` proves the registered-scheme event came from the native
+`Navigate` probe rather than a delayed page callback. Native readback requires
+devtools, browser accelerator keys, and default context menus to be disabled.
+A valid unpacked extension must fail installation with the Windows
+`ERROR_NOT_SUPPORTED` result.
 
 Before creation the shell rejects WebView2 environment overrides and checks
 both machine and user policy-registry views, including 32-bit and 64-bit
