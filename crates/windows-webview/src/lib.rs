@@ -715,7 +715,7 @@ pub enum WebviewError {
 mod tests {
     use std::sync::Arc;
 
-    use rpackit_transport::Secret;
+    use rpackit_transport::{SESSION_COOKIE_NAME, Secret};
     use tauri::webview::cookie::{Cookie, SameSite};
     use url::Url;
 
