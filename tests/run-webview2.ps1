@@ -20,15 +20,81 @@ if ($env:OS -ne "Windows_NT") {
     throw "The WebView2 acceptance harness requires Windows."
 }
 
+function Remove-OwnedCargoTargetDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (
+        ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    ) {
+        throw "Refusing to remove a Cargo target reparse point."
+    }
+    $resolved = [System.IO.Path]::GetFullPath(
+        (Resolve-Path -LiteralPath $item.FullName -ErrorAction Stop).Path
+    )
+    $tempRoot = [System.IO.Path]::GetFullPath(
+        (Get-Item -LiteralPath (
+            [System.IO.Path]::GetTempPath()
+        ) -Force -ErrorAction Stop).FullName
+    ).TrimEnd("\") + "\"
+    $leaf = Split-Path -Leaf $resolved
+    if (
+        -not $resolved.StartsWith(
+            $tempRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $leaf.StartsWith(
+            "rpackit-webview2-cargo-",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Refusing to remove an unverified Cargo target directory."
+    }
+    $attemptLimit = 30
+    for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+        try {
+            [System.IO.Directory]::Delete($resolved, $true)
+            return
+        }
+        catch [System.UnauthorizedAccessException] {
+            if (-not [System.IO.Directory]::Exists($resolved)) {
+                return
+            }
+            if ($attempt -eq $attemptLimit) {
+                throw
+            }
+        }
+        catch [System.IO.IOException] {
+            if (-not [System.IO.Directory]::Exists($resolved)) {
+                return
+            }
+            if ($attempt -eq $attemptLimit) {
+                throw
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+}
+
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
     $fileName = "rpackit-webview2-$([guid]::NewGuid().ToString('N')).json"
     $ReportPath = Join-Path $env:TEMP $fileName
 }
 $ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+$ownsTargetDirectory = $false
 if ([string]::IsNullOrWhiteSpace($TargetDirectory)) {
     if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
-        $TargetDirectory = Join-Path $repositoryRoot "target"
+        $TargetDirectory = Join-Path $env:TEMP (
+            "rpackit-webview2-cargo-" + [guid]::NewGuid().ToString("N")
+        )
+        $ownsTargetDirectory = $true
     }
     else {
         $TargetDirectory = $env:CARGO_TARGET_DIR
@@ -74,6 +140,9 @@ try {
 }
 finally {
     $env:CARGO_TARGET_DIR = $previousTargetDirectory
+    if ($ownsTargetDirectory) {
+        Remove-OwnedCargoTargetDirectory -Path $TargetDirectory
+    }
 }
 
 if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {

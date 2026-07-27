@@ -1,0 +1,147 @@
+name: Released portable R lifecycle gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/released-runtime.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/launcher-protocol/**"
+      - "crates/resource-bundle/**"
+      - "crates/windows-launcher/**"
+      - "crates/windows-lifecycle/**"
+      - "tests/cleanup-released-runtime.ps1"
+      - "tests/prepare-released-runtime.R"
+      - "tests/prepare-released-runtime.ps1"
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: released-portable-r-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RPACKIT_RUNTIME_VERSION: "4.6.1"
+  RPACKIT_RUNTIME_URL: "https://github.com/rpackit/runtime-win/releases/download/v4.6.1/portable-r-windows-x86_64-4.6.1.zip"
+  RPACKIT_RUNTIME_SHA256: "d106a4ad618a5279d9db4a61412505a5353c94e402920c0d3a627d37c5f1bf50"
+  RPACKIT_RUNTIME_HOME: "portable-r-windows-x86_64-4.6.1"
+  RPACKIT_PACKAGE_SHA: "990cbbc59b6ea7f8b90e422a4e0060dc56cffd2b"
+  RPACKIT_EXAMPLES_SHA: "385807ab418ece8875deb321db4878594882868e"
+  RPACKIT_CRAN_REPOSITORY: "https://cloud.r-project.org"
+  RPACKIT_GATE_WORK_ROOT: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}"
+  RPACKIT_RELEASE_BUNDLE: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\hello-shiny bundle"
+  RPACKIT_RELEASE_SESSIONS: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\private sessions"
+  RPACKIT_RELEASE_EVIDENCE: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\evidence\\lifecycle-evidence.json"
+  RPACKIT_PROFILE_MARKER: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\ambient-profile-executed"
+  CARGO_TARGET_DIR: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\cargo target"
+
+jobs:
+  released-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned rpackit package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: rpackit/rpackit
+          ref: ${{ env.RPACKIT_PACKAGE_SHA }}
+          path: gate-inputs/rpackit
+
+      - name: Check out pinned hello-shiny source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: rpackit/rpackit-examples
+          ref: ${{ env.RPACKIT_EXAMPLES_SHA }}
+          path: gate-inputs/examples
+
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+
+      - name: Prepare verified released runtime and hello-shiny bundle
+        shell: powershell
+        run: |
+          .\tests\prepare-released-runtime.ps1 `
+            -WorkRoot "$env:RPACKIT_GATE_WORK_ROOT" `
+            -RpackitSource ".\gate-inputs\rpackit" `
+            -ExamplesSource ".\gate-inputs\examples"
+
+      - name: Run the released-runtime lifecycle matrix
+        shell: powershell
+        env:
+          R_PROFILE_USER: "${{ env.RPACKIT_GATE_WORK_ROOT }}\\hostile ambient profile.R"
+          R_ENVIRON_USER: "${{ env.RPACKIT_GATE_WORK_ROOT }}\\hostile ambient Renviron"
+          RPACKIT_SESSION_TOKEN: "ambient-legacy-token-must-not-survive"
+        run: |
+          cargo test `
+            -p rpackit-windows-lifecycle `
+            --test released_runtime `
+            --locked `
+            -- `
+            --ignored `
+            --exact released_portable_r_and_hello_shiny_pass_lifecycle_matrix `
+            --nocapture
+
+      - name: Verify evidence is small and secret-free
+        if: always()
+        shell: powershell
+        run: |
+          $evidenceDirectory = Join-Path $env:RPACKIT_GATE_WORK_ROOT "evidence"
+          if (-not (Test-Path -LiteralPath $evidenceDirectory -PathType Container)) {
+            throw "The released-runtime evidence directory is missing."
+          }
+          $files = @(
+            Get-ChildItem -LiteralPath $evidenceDirectory -Filter "*.json" -File
+          )
+          if ($files.Count -ne 2) {
+            throw "Exactly two released-runtime evidence files are required."
+          }
+          foreach ($file in $files) {
+            if ($file.Length -gt 65536) {
+              throw "Released-runtime evidence exceeded 64 KiB."
+            }
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            $null = $text | ConvertFrom-Json
+            foreach ($forbidden in @(
+              "Shiny-Shared-Secret",
+              "RPACKIT_SESSION_TOKEN",
+              "ambient-legacy-token-must-not-survive",
+              "token-file",
+              $env:RUNNER_TEMP
+            )) {
+              if ($text.Contains($forbidden)) {
+                throw "Released-runtime evidence contained forbidden data."
+              }
+            }
+            if ($text -match "[A-Za-z]:\\\\") {
+              throw "Released-runtime evidence contained a Windows path."
+            }
+          }
+
+      - name: Upload secret-free released-runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: released-portable-r-hello-shiny-evidence
+          path: ${{ env.RPACKIT_GATE_WORK_ROOT }}\evidence\*.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove all released-runtime runner storage
+        if: always()
+        shell: powershell
+        run: |
+          .\tests\cleanup-released-runtime.ps1 `
+            -WorkRoot "$env:RPACKIT_GATE_WORK_ROOT"

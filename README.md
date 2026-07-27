@@ -276,10 +276,25 @@ post-readiness process exit detection, and non-recursive cleanup retry. The
 fixture also verifies the actual isolated child environment. It contains no
 portable R and is not a substitute for the released-runtime gate.
 
+The separate `Released portable R lifecycle gate` workflow is the real-runtime
+boundary. It runs only on GitHub-hosted Windows, checks out pinned rpackit and
+`hello-shiny` commits, downloads the existing portable-R `v4.6.1` prerelease,
+verifies its published SHA-256, and prepares a dependency-complete bundle in a
+unique `runner.temp` directory. An explicitly ignored Rust acceptance target
+then proves the real page loads only with `S`, missing and wrong credentials
+receive `403`, graceful and forced Job shutdown leave zero members, owner drop
+removes the process tree and private session, an exact runtime crash is
+detected, a one-millisecond startup deadline fails closed, an occupied port
+does not disturb its contender, and an ambient hostile R profile does not run.
+Only two bounded, path-free, secret-free JSON files are retained for seven
+days. The downloaded archive, extracted runtime, copied bundle, package
+libraries, Cargo target, profiles, and sessions are deleted together before
+the runner finishes.
+
 This is deliberately not a full Phase 2 claim. Generating the complete native
-Tauri launch state around the proxy/WebView and running this same owner against
-the released portable R, generated launcher, and `hello-shiny` remain required
-before Phase 2 can be marked complete.
+Tauri launch state around the proxy/WebView remains required. The new
+released-runtime workflow must also produce a reviewed passing run before its
+real-R checks count as completed evidence.
 
 ## Development
 
@@ -329,9 +344,19 @@ The fixed runner downloads the x64 package from the pinned Microsoft CDN URL,
 checks the archive length and SHA-256, extracts it with `expand.exe`, verifies
 the exact 259-file/667,247,853-byte tree digest, executable digest, file
 version, Microsoft signer and certificate thumbprint, and then deletes the
-temporary archive and runtime. Both runners reuse the repository Cargo
-`target` directory by default instead of creating another multi-gigabyte
-temporary build cache.
+temporary archive and runtime. When run manually, both runners now use one
+uniquely named system-temp Cargo directory and remove it after the process
+exits. CI explicitly passes its existing runner-scoped Cargo target so the
+Debug and Release matrices can reuse remote build output. A maintainer can
+still pass `-TargetDirectory` deliberately, in which case that caller-owned
+directory is retained.
+
+Do not run the released portable-R gate locally. Its ignored test and
+preparation script both require `GITHUB_ACTIONS=true`; the workflow owns all
+large inputs in `runner.temp` and removes that complete verified subtree.
+Portable runtime archives intended for users belong in
+[GitHub Releases](https://github.com/rpackit/runtime-win/releases), not this
+working tree.
 
 The harness exits nonzero when a required gate fails and writes only
 secret-free JSON reports to caller-selected temporary paths. No report,
@@ -503,7 +528,9 @@ Phase 2 now has strict schema-1 resource validation, verified Windows
 Job/process creation, exact runtime PID/listener capture, strict protocol-2
 decoding, atomically restricted token/control files, and one integrated
 synthetic lifecycle owner with authenticated readiness and deterministic
-shutdown. The released portable-R/`hello-shiny` matrix remains in progress;
-resource generation and installers are later milestones. See
+shutdown. A remote-only released portable-R/`hello-shiny` workflow now owns
+the real-runtime matrix and all of its temporary storage; its first reviewed
+passing run is still required before that gate is claimed complete. Native
+shell composition, resource generation, and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

@@ -26,6 +26,7 @@ ownership and readiness.
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
+| `.github/workflows/released-runtime.yml` and `tests/prepare-released-runtime.*` | Pin and verify released portable R plus rpackit/hello-shiny sources, prepare a real bundle in runner temp, execute the ignored lifecycle matrix, retain bounded secret-free evidence, and delete all heavy inputs and build output | Local runtime caches, durable binaries, mutable source refs, release claims without a passing run |
 
 ## Resource bundle validation
 
@@ -159,6 +160,17 @@ The synthetic fixture exercises these native boundaries without bundling R.
 It therefore proves orchestration behavior but does not yet prove
 compatibility with the released portable runtime, generated `launcher.R`,
 Shiny, or the proxy/WebView window-close sequence.
+
+The released-runtime workflow supplies the next evidence layer without adding
+large repository or workstation state. It verifies the immutable SHA-256 of
+the existing portable-R `v4.6.1` Release, checks out immutable rpackit and
+`hello-shiny` commits, installs bundle dependencies remotely, and runs the
+same owner against the generated launcher and real Shiny page. The acceptance
+target is ignored during ordinary Cargo tests and refuses to run outside
+GitHub Actions. Its runner work root contains the archive, both runtime trees,
+system and bundled package libraries, Cargo output, hostile profile probes,
+and private sessions; one verified recursive cleanup removes that exact
+runner-temp child after the small evidence files are uploaded.
 
 ## Secret and origin model
 
@@ -614,8 +626,11 @@ WebSocket activity-idle shutdown, and independent bidirectional WebSocket
 byte-rate backpressure are tested on both runtime modes. The Phase 2 Windows
 resource validator, Job/process-creation, exact process/listener identity,
 protocol decoder, and private DACL file foundations have their own passing
-tests; real protocol-2 R readiness, graceful close, and post-Job
-credential/profile cleanup are not yet complete.
+tests. A remote-only gate now implements real protocol-2 R readiness,
+authenticated `hello-shiny`, graceful/forced/crash/timeout behavior, and
+post-Job profile/session cleanup, but those checks do not become evidence
+until the workflow has a reviewed passing run. They also do not yet prove the
+combined proxy/WebView window-close owner.
 
 ## Maintainer rules
 

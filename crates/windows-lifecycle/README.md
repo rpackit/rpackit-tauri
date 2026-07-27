@@ -46,6 +46,10 @@ removes only the known files plus the exact empty session directory.
 Unexpected entries remain available through `session_directory()` and can be
 cleaned later with `retry_private_cleanup()`.
 
-The included synthetic runtime validates orchestration and negative paths. A
-GitHub Actions matrix against released portable R and `hello-shiny` is still a
-separate hard gate.
+The included synthetic runtime validates orchestration and negative paths.
+The repository also defines a separate ignored, GitHub-Actions-only matrix
+against the SHA-256-pinned portable-R Release, generated launcher, and pinned
+`hello-shiny`. It retains only bounded secret-free JSON evidence and deletes
+its archive, extracted/copied runtimes, package libraries, Cargo target, and
+sessions. That workflow must pass and be reviewed before real-R compatibility
+is claimed.

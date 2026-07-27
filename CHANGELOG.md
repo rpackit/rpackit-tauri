@@ -57,9 +57,19 @@ All notable changes to this pre-release repository are documented here.
   forced close, owner drop, malformed protocol, readiness timeout, occupied
   port, post-readiness exit, environment isolation, and preserved audit-entry
   cleanup retry without downloading a runtime locally.
+- Added a remote-only released portable-R/`hello-shiny` workflow. It pins both
+  source commits and the existing runtime Release SHA-256, prepares the real
+  bundle only under `runner.temp`, exercises authenticated content plus
+  graceful/forced/crash/timeout/occupied-port/profile-isolation paths, uploads
+  only two small secret-free JSON evidence files, and deletes the archive,
+  extracted and copied runtimes, package libraries, Cargo target, and private
+  sessions.
+- Changed manual WebView2 runners to use a uniquely named system-temp Cargo
+  target by default and remove it after completion. CI explicitly reuses its
+  runner-owned repository target; only a caller-supplied target is retained.
 - Kept the Phase 2 boundary explicit: generated native-metadata validation,
-  proxy/WebView orchestration and the released portable-R/`hello-shiny`
-  lifecycle matrix remain in progress.
+  proxy/WebView orchestration and a reviewed passing released-runtime workflow
+  run remain in progress.
 
 ### Transport contract version 2
 
@@ -254,5 +264,6 @@ All notable changes to this pre-release repository are documented here.
 
 ### Known pre-release gaps
 
-- Protocol-2 R launcher ownership and Windows Job Object lifecycle enforcement
-  are Phase 2 work.
+- The released portable-R/`hello-shiny` workflow needs a reviewed passing run,
+  and the production Tauri owner still needs to compose this R lifecycle with
+  the authenticated proxy/WebView shutdown sequence.

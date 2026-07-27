@@ -67,8 +67,8 @@ A separate native layer atomically creates a protected per-launch directory
 and token/control files whose exact DACL contains only current-account and
 `SYSTEM` full-control allow entries. It reads each DACL back, requires the
 protected bit, uses `CREATE_NEW` for fixed files, and never recursively removes
-an unexpected entry. This evidence does not yet cover the released portable R
-and `hello-shiny`.
+an unexpected entry. This component evidence does not cover released portable
+R and `hello-shiny`.
 
 The Windows lifecycle owner now connects the same layers to an executable
 synthetic runtime: it verifies actual token deletion, strict events, exact
@@ -77,6 +77,17 @@ handles, graceful control signaling, forced Job fallback, zero active members,
 and retryable non-recursive cleanup. Stderr text and non-protocol stdout are
 never retained. This fixture is deliberately not evidence about real R,
 generated launcher behavior, Shiny, or the proxy/WebView shutdown sequence.
+
+The real-R acceptance target is separate and remote-only. GitHub Actions pins
+the rpackit and `hello-shiny` commits, verifies the existing portable-R
+Release archive against its immutable SHA-256, and owns every large file under
+one `runner.temp` child. The test refuses to run outside Actions and is ignored
+by ordinary Cargo invocations. Its output is limited to source/runtime
+identities, package versions, booleans, and counters; token values, PIDs,
+runner paths, raw output, and bundle contents are rejected. The complete
+runner subtree is removed after a seven-day evidence artifact is uploaded.
+The workflow's existence is not proof of real-R behavior: only a reviewed
+passing run can close that gate.
 
 The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
 creation, matching the documented
