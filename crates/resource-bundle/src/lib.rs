@@ -1208,8 +1208,8 @@ launch.browser = announce_listening
                 "provenance": {
                     "registry": "https://github.com/rpackit/runtime/raw/main/versions.json",
                     "metadata_source": "https://github.com/rpackit/runtime/raw/main/metadata/windows-x86_64-4.6.1.json",
-                    "artifact_url": "https://github.com/rpackit/runtime-win/releases/download/v4.6.1/portable-r-windows-x86_64-4.6.1.zip",
-                    "sha256": "d106a4ad618a5279d9db4a61412505a5353c94e402920c0d3a627d37c5f1bf50",
+                    "artifact_url": "https://github.com/rpackit/runtime-win/releases/download/v4.6.1-r1/portable-r-windows-x86_64-4.6.1.zip",
+                    "sha256": "a452f127c9aea16a9ebbd9794e55521dfffefc527a862ad15220c6c2c46b6419",
                     "archive_format": "zip",
                     "cache_hit": true
                 }

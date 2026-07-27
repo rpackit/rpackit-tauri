@@ -10,6 +10,8 @@ All notable changes to this pre-release repository are documented here.
   workspace manifest. Tagged template releases now publish a small,
   checksum-addressed source archive without binaries, installers, or portable
   runtime payloads.
+- Moved released-runtime gates and provenance fixtures to the immutable
+  `v4.6.1-r1` runtime revision whose ZIP uses portable POSIX entry separators.
 
 ### Phase 2 lifecycle foundation
 
