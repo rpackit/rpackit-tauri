@@ -130,16 +130,13 @@ impl ShellEvidence {
 }
 
 pub(crate) fn main() {
-    let options = match parse_options(std::env::args_os().skip(1)) {
-        Ok(options) => options,
-        Err(()) => {
-            eprintln!(
-                "usage: rpackit-windows-shell --bundle <dir> \
-                 --session-parent <dir> --profile-parent <dir> \
-                 [--evidence <file> --close-after-ready]"
-            );
-            std::process::exit(2);
-        }
+    let Ok(options) = parse_options(std::env::args_os().skip(1)) else {
+        eprintln!(
+            "usage: rpackit-windows-shell --bundle <dir> \
+             --session-parent <dir> --profile-parent <dir> \
+             [--evidence <file> --close-after-ready]"
+        );
+        std::process::exit(2);
     };
     let evidence_path = options.evidence.clone();
     let (signal_sender, signal_receiver) = mpsc::unbounded_channel();
@@ -164,7 +161,7 @@ pub(crate) fn main() {
                     );
                 }
                 WindowEvent::Destroyed => {
-                    request_cleanup(&window_signal, &window_cleanup_started, ShellSignal::Forced)
+                    request_cleanup(&window_signal, &window_cleanup_started, ShellSignal::Forced);
                 }
                 _ => {}
             }
@@ -189,11 +186,8 @@ pub(crate) fn main() {
             Ok(())
         })
         .build(tauri::generate_context!());
-    let app = match app {
-        Ok(app) => app,
-        Err(_) => {
-            std::process::exit(1);
-        }
+    let Ok(app) = app else {
+        std::process::exit(1);
     };
     let run_signal = signal_sender;
     let run_cleanup_started = cleanup_started;
@@ -237,12 +231,9 @@ async fn run_shell(
     )
     .await;
     drop(browser);
-    let mut webview = match webview {
-        Ok(webview) => webview,
-        Err(_) => {
-            let _ = native.force_shutdown().await;
-            return Err(ShellFailure::WebviewStartup);
-        }
+    let Ok(mut webview) = webview else {
+        let _ = native.force_shutdown().await;
+        return Err(ShellFailure::WebviewStartup);
     };
     let webview2_version = webview.runtime_version().to_owned();
     if options.close_after_ready {
@@ -357,13 +348,12 @@ fn validate_options(options: &ShellOptions) -> Result<(), ()> {
     {
         return Err(());
     }
-    if let Some(evidence) = &options.evidence {
-        if evidence.try_exists().map_err(|_| ())?
+    if let Some(evidence) = &options.evidence
+        && (evidence.try_exists().map_err(|_| ())?
             || !evidence.parent().is_some_and(Path::is_dir)
-            || evidence.file_name() == Some(OsStr::new(""))
-        {
-            return Err(());
-        }
+            || evidence.file_name() == Some(OsStr::new("")))
+    {
+        return Err(());
     }
     Ok(())
 }
