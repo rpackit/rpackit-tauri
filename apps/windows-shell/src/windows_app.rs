@@ -407,8 +407,7 @@ fn resolve_options(
             let bundle = app
                 .path()
                 .resource_dir()
-                .map_err(|_| ShellFailure::PackagedPaths)?
-                .join("resources");
+                .map_err(|_| ShellFailure::PackagedPaths)?;
             let app_data = app
                 .path()
                 .app_local_data_dir()
@@ -418,7 +417,7 @@ fn resolve_options(
             let profile_parent = app_data.join("profiles");
             ensure_directory(&session_parent)?;
             ensure_directory(&profile_parent)?;
-            if !bundle.is_dir() {
+            if !bundle.join("resources").is_dir() {
                 return Err(ShellFailure::PackagedPaths);
             }
             (bundle, session_parent, profile_parent)
