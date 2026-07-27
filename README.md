@@ -568,6 +568,19 @@ result. The response-splitting and no-body fixtures deliberately omit an
 upstream `Connection: close` where applicable, so this proves proxy-enforced
 downstream closure rather than inherited upstream advice.
 
+## Versioned generated-project source
+
+`templates/windows-v1/template.json` is the machine-readable boundary used by
+the rpackit project generator. It pins transport contract 2, resource schema
+1, launcher protocol 2, the reviewed Rust/Tauri/wry/WebView2 minima, the
+application shell, and the six runtime crates needed by a generated project.
+`templates/windows-v1/Cargo.toml` is the reduced generated-project workspace;
+the acceptance spike and testkit are deliberately absent.
+
+A `windows-template-v*` tag publishes one SHA-256-addressed source ZIP from
+the exact Git tree. The asset is generator input only. It contains no
+executable, installer, portable R runtime, or end-user release.
+
 ## Status
 
 This repository remains pre-release because it is an acceptance spike, but

@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "template": "rpackit-windows",
+  "template_version": "1.0.0",
+  "contracts": {
+    "transport": "2",
+    "resource_bundle": "1",
+    "launcher": "2"
+  },
+  "requirements": {
+    "architecture": "x86_64",
+    "rust": "1.97.1",
+    "tauri": "2.11.5",
+    "tauri_cli": "2.11.4",
+    "wry": "0.55.1",
+    "webview2": "149.0.4022.98",
+    "windows_minimum": "10.0.17134"
+  },
+  "project": {
+    "root_manifest": "templates/windows-v1/Cargo.toml",
+    "application_source": "apps/windows-shell",
+    "application_target": "src-tauri",
+    "default_icon": "apps/windows-spike/icons/icon.ico",
+    "crates": [
+      "launcher-protocol",
+      "resource-bundle",
+      "transport",
+      "windows-launcher",
+      "windows-lifecycle",
+      "windows-webview"
+    ],
+    "root_files": [
+      ".gitignore",
+      "Cargo.lock",
+      "LICENSE",
+      "rust-toolchain.toml",
+      "rustfmt.toml"
+    ]
+  },
+  "source": {
+    "repository": "https://github.com/rpackit/rpackit-tauri"
+  }
+}

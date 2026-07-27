@@ -4,6 +4,13 @@ All notable changes to this pre-release repository are documented here.
 
 ## Unreleased
 
+### Generated-project template
+
+- Added the versioned Windows generated-project template contract and reduced
+  workspace manifest. Tagged template releases now publish a small,
+  checksum-addressed source archive without binaries, installers, or portable
+  runtime payloads.
+
 ### Phase 2 lifecycle foundation
 
 - Added a safe non-executing resource-bundle crate. It bounds strict

@@ -1,0 +1,67 @@
+name: Windows source template release
+
+on:
+  push:
+    tags:
+      - "windows-template-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate version and archive tracked source
+        shell: powershell
+        run: |
+          $descriptor = Get-Content `
+            -LiteralPath "templates/windows-v1/template.json" `
+            -Raw | ConvertFrom-Json
+          $expectedTag = "windows-template-v$($descriptor.template_version)"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match $expectedTag."
+          }
+          $assetName = "rpackit-windows-template-v$($descriptor.template_version).zip"
+          $asset = Join-Path $env:RUNNER_TEMP $assetName
+          $prefix = "$expectedTag/"
+          git archive `
+            --format=zip `
+            "--prefix=$prefix" `
+            "--output=$asset" `
+            $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw "git archive failed."
+          }
+          $sha256 = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = "$asset.sha256"
+          "$sha256  $assetName" | Set-Content `
+            -LiteralPath $checksum `
+            -Encoding ascii `
+            -NoNewline
+          "RPACKIT_TEMPLATE_ASSET=$asset" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+          "RPACKIT_TEMPLATE_CHECKSUM=$checksum" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+      - name: Publish source-only template
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create `
+            "$env:GITHUB_REF_NAME" `
+            "$env:RPACKIT_TEMPLATE_ASSET" `
+            "$env:RPACKIT_TEMPLATE_CHECKSUM" `
+            --verify-tag `
+            --title "rpackit Windows source template $env:GITHUB_REF_NAME" `
+            --notes "Versioned source input for rpackit project generation. This release contains no executable, installer, portable R runtime, or supported end-user application."
