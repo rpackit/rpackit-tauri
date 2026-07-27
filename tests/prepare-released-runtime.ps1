@@ -168,7 +168,10 @@ $env:TEMP = $rTemp
 $env:TMP = $rTemp
 $env:TMPDIR = $rTemp
 
-$installExpression = @'
+$systemInstallScript = Join-Path $resolvedWorkRoot (
+  "install-system-dependencies.R"
+)
+@'
 library_path <- Sys.getenv("RPACKIT_GATE_SYSTEM_LIBRARY")
 packages <- c("cli", "digest", "jsonlite", "openssl", "processx", "ps", "zip")
 options(timeout = 600)
@@ -182,8 +185,8 @@ missing <- setdiff(packages, rownames(installed.packages(lib.loc = library_path)
 if (length(missing)) {
   stop("System-R dependency preparation was incomplete.", call. = FALSE)
 }
-'@
-& $rscriptCommand.Source --vanilla -e $installExpression
+'@ | Set-Content -LiteralPath $systemInstallScript -Encoding ASCII
+& $rscriptCommand.Source --vanilla $systemInstallScript
 Assert-LastExitCode -Operation "System-R dependency preparation"
 
 & $rCommand.Source CMD INSTALL "--library=$systemLibrary" $resolvedRpackitSource
