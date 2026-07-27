@@ -1,4 +1,4 @@
-//! Thin Tauri event-loop owner around the native proxy/R and WebView owners.
+//! Thin Tauri event-loop owner around the native proxy/R and `WebView` owners.
 
 use std::{
     ffi::{OsStr, OsString},

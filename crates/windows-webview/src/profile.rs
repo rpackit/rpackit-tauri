@@ -19,6 +19,7 @@ impl fmt::Debug for ScopedProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ScopedProfile")
+            .field("parent", &"[PRIVATE]")
             .field("path", &self.path.as_ref().map(|_| "[PRIVATE]"))
             .finish()
     }

@@ -1,8 +1,8 @@
-//! Native-only secure WebView2 and per-launch profile ownership.
+//! Native-only secure `WebView2` and per-launch profile ownership.
 //!
 //! This crate accepts browser launch material only after the authenticated
 //! proxy and bundled R runtime are ready. It creates one hidden, hardened
-//! WebView, performs the one-time native bootstrap, verifies the resulting
+//! `WebView`, performs the one-time native bootstrap, verifies the resulting
 //! host-only session cookie, navigates to the application, and owns cookie,
 //! browsing-data, window and exact profile cleanup.
 
@@ -37,15 +37,15 @@ use url::Url;
 
 use profile::ScopedProfile;
 
-/// Label reserved for the single application WebView.
+/// Label reserved for the single application `WebView`.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
-const MAX_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_STARTUP_TIMEOUT: Duration = Duration::from_mins(2);
 const MAX_NATIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_PROFILE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_PROFILE_CLEANUP_TIMEOUT: Duration = Duration::from_mins(1);
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Bounded WebView startup and cleanup limits.
+/// Bounded `WebView` startup and cleanup limits.
 #[derive(Clone, Copy, Debug)]
 pub struct WebviewLimits {
     /// Maximum time from bootstrap navigation to an authenticated application
@@ -53,7 +53,7 @@ pub struct WebviewLimits {
     pub startup_timeout: Duration,
     /// Maximum time for one native COM dispatch.
     pub native_operation_timeout: Duration,
-    /// Maximum time to wait for WebView profile handles to close.
+    /// Maximum time to wait for `WebView` profile handles to close.
     pub profile_cleanup_timeout: Duration,
     /// Poll interval for cookie and profile cleanup.
     pub poll_interval: Duration,
@@ -146,7 +146,7 @@ impl fmt::Debug for WebviewPreflight {
 
 impl WebviewPreflight {
     /// Verifies forbidden environment and policy overrides are absent and the
-    /// installed/configured WebView2 runtime meets the reviewed minimum.
+    /// installed/configured `WebView2` runtime meets the reviewed minimum.
     ///
     /// Call this before launching bundled R.
     ///
@@ -175,15 +175,15 @@ impl WebviewPreflight {
 pub struct WebviewShutdownReport {
     /// Whether the reserved browser-session cookie is absent.
     pub session_cookie_absent: bool,
-    /// Whether WebView2 accepted the browsing-data clear request.
+    /// Whether `WebView2` accepted the browsing-data clear request.
     pub browsing_data_clear_queued: bool,
-    /// Whether the application WebView was destroyed.
+    /// Whether the application `WebView` was destroyed.
     pub window_destroyed: bool,
     /// Whether the exact per-launch profile directory was removed.
     pub profile_removed: bool,
 }
 
-/// One authenticated application WebView and its exact per-launch profile.
+/// One authenticated application `WebView` and its exact per-launch profile.
 #[must_use = "the secure WebView owner must be shut down explicitly"]
 pub struct SecureWebviewOwner {
     window: Option<WebviewWindow<Wry>>,
@@ -200,6 +200,7 @@ impl fmt::Debug for SecureWebviewOwner {
             .field("window_running", &self.window.is_some())
             .field("root_origin", &origin_text(&self.root_url))
             .field("profile", &self.profile)
+            .field("limits", &self.limits)
             .field("runtime_version", &self.runtime_version)
             .finish()
     }
@@ -207,7 +208,7 @@ impl fmt::Debug for SecureWebviewOwner {
 
 impl SecureWebviewOwner {
     /// Creates, hardens, bootstraps and shows one authenticated application
-    /// WebView after native proxy/R readiness.
+    /// `WebView` after native proxy/R readiness.
     ///
     /// # Errors
     ///
@@ -375,7 +376,7 @@ impl SecureWebviewOwner {
         Ok(owner)
     }
 
-    /// Returns the preflighted WebView2 runtime version.
+    /// Returns the preflighted `WebView2` runtime version.
     #[must_use]
     pub fn runtime_version(&self) -> &str {
         &self.runtime_version
@@ -394,7 +395,7 @@ impl SecureWebviewOwner {
             .map_err(|_| WebviewError::WindowHide)
     }
 
-    /// Deletes the reserved cookie, clears browsing data, destroys the WebView
+    /// Deletes the reserved cookie, clears browsing data, destroys the `WebView`
     /// and removes the exact per-launch profile.
     ///
     /// # Errors
@@ -484,6 +485,8 @@ enum StartupFailure {
     Show,
 }
 
+type StartupSender = Arc<Mutex<Option<oneshot::Sender<Result<(), StartupFailure>>>>>;
+
 impl From<StartupFailure> for WebviewError {
     fn from(value: StartupFailure) -> Self {
         match value {
@@ -494,10 +497,7 @@ impl From<StartupFailure> for WebviewError {
     }
 }
 
-fn signal_startup(
-    sender: &Arc<Mutex<Option<oneshot::Sender<Result<(), StartupFailure>>>>>,
-    result: Result<(), StartupFailure>,
-) {
+fn signal_startup(sender: &StartupSender, result: Result<(), StartupFailure>) {
     if let Ok(mut sender) = sender.lock()
         && let Some(sender) = sender.take()
     {
@@ -586,7 +586,7 @@ fn combine_cleanup_error(primary: WebviewError, cleanup: Option<WebviewError>) -
     }
 }
 
-/// Secret-free WebView policy, startup and cleanup failures.
+/// Secret-free `WebView` policy, startup and cleanup failures.
 #[derive(Debug, Error)]
 pub enum WebviewError {
     /// A caller supplied invalid or unbounded timing limits.
@@ -601,19 +601,19 @@ pub enum WebviewError {
     /// The current executable identity could not be read.
     #[error("application executable identity was unavailable")]
     ExecutableIdentity,
-    /// An untrusted WebView2 environment override was present.
+    /// An untrusted `WebView2` environment override was present.
     #[error("an untrusted WebView2 environment override was present")]
     EnvironmentOverride,
-    /// WebView2 policy registry inspection failed.
+    /// `WebView2` policy registry inspection failed.
     #[error("WebView2 policy inspection failed")]
     RegistryInspection,
-    /// An untrusted WebView2 policy override was present.
+    /// An untrusted `WebView2` policy override was present.
     #[error("an untrusted WebView2 policy override was present")]
     RegistryOverride,
-    /// No usable WebView2 runtime was available.
+    /// No usable `WebView2` runtime was available.
     #[error("WebView2 runtime was unavailable")]
     RuntimeUnavailable,
-    /// The observed WebView2 runtime was below the reviewed minimum.
+    /// The observed `WebView2` runtime was below the reviewed minimum.
     #[error("WebView2 runtime did not meet the reviewed minimum")]
     RuntimeUnsupported,
     /// Preflight and the actual Tauri application identifiers differed.
@@ -670,7 +670,7 @@ pub enum WebviewError {
     /// The native bootstrap completion channel closed.
     #[error("native bootstrap channel closed")]
     BootstrapChannel,
-    /// WebView2 rejected the exact native bootstrap request.
+    /// `WebView2` rejected the exact native bootstrap request.
     #[error("native bootstrap navigation failed")]
     BootstrapFailure,
     /// The authenticated application document did not become ready in time.
@@ -697,10 +697,10 @@ pub enum WebviewError {
     /// The combined owner no longer retained a window or profile.
     #[error("secure WebView owner was not running")]
     OwnerNotRunning,
-    /// Profile retry was requested while the WebView remained live.
+    /// Profile retry was requested while the `WebView` remained live.
     #[error("secure WebView owner still retained a live window")]
     OwnerStillRunning,
-    /// Cleanup also failed after an earlier WebView failure.
+    /// Cleanup also failed after an earlier `WebView` failure.
     #[error("secure WebView startup failed and cleanup also failed")]
     CleanupAfterFailure {
         /// Original operation failure.

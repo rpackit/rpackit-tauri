@@ -1,4 +1,4 @@
-//! Narrow audited WebView2 COM boundary.
+//! Narrow audited `WebView2` COM boundary.
 
 #![allow(unsafe_code)]
 
