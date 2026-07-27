@@ -4,9 +4,15 @@
 //! non-inheritable Job Object configured with kill-on-close, verified as a Job
 //! member, and only then resumed. The child inherits exactly three standard-I/O
 //! pipe handles; it never inherits the Job handle.
+//!
+//! A separate native boundary atomically creates each random launch directory
+//! and token/control file with a protected DACL restricted to the current
+//! account and `SYSTEM`, then reads the descriptor back exactly.
 
 #![cfg(windows)]
 #![deny(unsafe_op_in_unsafe_fn)]
+
+mod private_fs;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -44,6 +50,8 @@ use windows::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
+
+pub use private_fs::PrivateSession;
 
 const WINDOWS_COMMAND_LINE_LIMIT: usize = 32_767;
 const INTERNAL_FAILURE_EXIT_CODE: u32 = 0x5250_4B49;
@@ -972,6 +980,42 @@ pub enum LaunchError {
     /// The working directory must be an existing absolute directory.
     #[error("the launcher working directory is not an existing absolute directory")]
     InvalidCurrentDirectory,
+    /// The session parent must be an existing, normalized absolute directory.
+    #[error("the private-session parent is not an existing normalized absolute directory")]
+    InvalidSessionParent,
+    /// A private-session child name must be one ordinary path component.
+    #[error("a private-session child name was not one ordinary path component")]
+    InvalidPrivateLeaf,
+    /// A launcher token must be 16-256 URL-safe ASCII characters.
+    #[error("the launcher token was not 16-256 URL-safe ASCII characters")]
+    InvalidToken,
+    /// Cryptographic randomness was unavailable for a private session name.
+    #[error("cryptographic randomness was unavailable for the private session name")]
+    RandomGenerationFailed,
+    /// Every bounded random directory name collided with an existing entry.
+    #[error("every bounded private-session directory name already existed")]
+    SessionNameCollisions,
+    /// A fixed private file already existed in the new session.
+    #[error("the private-session {0} file already existed")]
+    PrivateFileAlreadyExists(&'static str),
+    /// The applied DACL did not exactly match the fail-closed descriptor.
+    #[error("a private-session DACL did not match the required protected descriptor")]
+    PrivateDaclMismatch,
+    /// Native token information did not fit its reported buffer.
+    #[error("the current-account token information had an invalid layout")]
+    MalformedTokenInformation,
+    /// A native security string was not valid UTF-16.
+    #[error("a native security string was not valid UTF-16")]
+    MalformedSecurityString,
+    /// A non-native private-session filesystem operation failed.
+    #[error("{operation} failed: {source}")]
+    FileSystem {
+        /// Filesystem operation that failed.
+        operation: &'static str,
+        /// Underlying operating-system error.
+        #[source]
+        source: std::io::Error,
+    },
     /// Windows command-line fields cannot contain a UTF-16 NUL.
     #[error("{0} contains an interior NUL")]
     InteriorNul(&'static str),

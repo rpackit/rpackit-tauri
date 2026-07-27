@@ -183,9 +183,19 @@ start a bundled Windows process tree. It:
   outside this launch's Job;
 - reads Windows' IPv4 and IPv6 owner-PID listener tables and accepts only one
   exact `127.0.0.1:<port>` row owned by that captured live Job member, with no
-  competing listener on the selected port; and
+  competing listener on the selected port;
+- creates a cryptographically random per-launch directory with
+  [`CreateDirectoryW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
+  and an atomic protected DACL containing exactly full-control allow entries
+  for the current account and `SYSTEM`;
+- creates the token and control files with `CreateFileW(CREATE_NEW)` and the
+  same protected two-principal file DACL, writes `S` only as one URL-safe line
+  in the token file, zeroizes the temporary write buffer, and reads every DACL
+  back through `GetNamedSecurityInfoW`; and
 - terminates the suspended child before execution if Job assignment fails,
-  while closing the owned Job kills the complete remaining process tree.
+  while closing the owned Job kills the complete remaining process tree. Its
+  cleanup API removes only the two fixed files and then the exact empty
+  session directory; it never recursively deletes an unexpected entry.
 
 Windows tests prove argument preservation through paths and values containing
 spaces, quotes, and trailing backslashes; exact Job-policy readback; failed
@@ -195,7 +205,10 @@ and its descendant when the Job closes. The same tree test captures exact
 handles for both processes, rejects the test runner as an outside-Job PID, and
 observes both captured identities terminate after Job close. A real
 IPv4-loopback listener test independently matches its Windows owner-PID table
-row to the captured identity.
+row to the captured identity. Private-session tests cover paths with spaces,
+exact token contents, DACL readback, absent-then-atomic control creation,
+duplicate rejection, invalid input without residue, launcher-style token
+deletion, and preservation of an unexpected audit entry during cleanup.
 
 `crates/launcher-protocol` provides the safe protocol-2 boundary shared by
 later lifecycle owners. Its streaming decoder bounds every stdout line,
@@ -209,11 +222,11 @@ is terminal. Error display text is length-bounded and control characters are
 collapsed.
 
 This is deliberately not a full Phase 2 claim. Bundle/manifest validation,
-private session-directory DACLs, one-time `S` token-file handling, wiring the
-decoder and reported PID capture to the real R lifecycle pipes, listener
-ownership verification to the real R process, authenticated readiness,
-graceful control-file shutdown, and integration with `hello-shiny` remain
-required before Phase 2 can be marked complete.
+generation of `S`, real-launcher consumption and deletion of its protected
+token file, wiring the decoder and reported PID capture to the real R
+lifecycle pipes, listener ownership verification to the real R process,
+authenticated readiness, graceful control-file shutdown, and integration with
+`hello-shiny` remain required before Phase 2 can be marked complete.
 
 ## Development
 
@@ -433,8 +446,10 @@ Version Runtime `149.0.4022.98` both passed the complete matrix in Debug and
 Release. The fixed reports have `development_gates_passed: true`,
 `phase1_release_ready: true`, and an empty `unproven_release_gates` object.
 
-Phase 2 now has a verified Windows Job/process-creation foundation, but the
-protocol-2 R readiness and complete shutdown lifecycle remain in progress;
-resource generation and installers are later milestones. See
+Phase 2 now has verified Windows Job/process creation, exact runtime
+PID/listener capture, strict protocol-2 decoding, and atomically restricted
+token/control-file foundations. Real R readiness and the complete shutdown
+lifecycle remain in progress; resource generation and installers are later
+milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

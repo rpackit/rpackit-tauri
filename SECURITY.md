@@ -51,8 +51,22 @@ non-inheritable PID-plus-creation-time handle only after confirming the live
 process belongs to the owned Job. Windows owner-PID tables must then show one
 exact IPv4-loopback listener for that PID and no same-port IPv4/IPv6
 competitor, with liveness and Job membership checked around the snapshot.
-This evidence does not yet cover connecting those layers to a real R launch,
-authenticated readiness, private credential files, or graceful close.
+A separate native layer atomically creates a protected per-launch directory
+and token/control files whose exact DACL contains only current-account and
+`SYSTEM` full-control allow entries. It reads each DACL back, requires the
+protected bit, uses `CREATE_NEW` for fixed files, and never recursively removes
+an unexpected entry. This evidence does not yet cover connecting those layers
+to a real R launch, authenticated readiness, launcher consumption/deletion of
+the token, or graceful close.
+
+The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
+creation, matching the documented
+[`CreateDirectoryW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
+security boundary; a null descriptor is never used for these objects. The
+directory and file descriptors use protected
+[`D:P` SDDL](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format).
+Only the token file contains `S`. The session value, process arguments,
+environment, logs, reports, and control file contain no secret value.
 
 The newest WebView2 API used by the harness has a historical compatibility
 floor of `120.0.2210.55`, but that obsolete runtime is neither publicly

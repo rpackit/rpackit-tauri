@@ -1,6 +1,6 @@
 [package]
 name = "rpackit-windows-launcher"
-description = "Fail-closed Windows process-tree ownership for bundled rpackit R runtimes"
+description = "Fail-closed Windows process-tree ownership and private launch files for bundled rpackit R runtimes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,16 +9,21 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+getrandom.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 windows = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",
   "Win32_Networking_WinSock",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

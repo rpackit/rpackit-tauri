@@ -2592,9 +2592,12 @@ dependencies = [
 name = "rpackit-windows-launcher"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "hex",
  "tempfile",
  "thiserror 2.0.19",
  "windows",
+ "zeroize",
 ]
 
 [[package]]

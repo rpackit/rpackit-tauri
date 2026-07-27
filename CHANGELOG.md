@@ -20,6 +20,13 @@ All notable changes to this pre-release repository are documented here.
 - Added bounded IPv4/IPv6 Windows owner-PID table inspection. Listener
   verification requires one exact `127.0.0.1:<port>` row owned by the captured
   live Job member and rejects every missing or competing same-port row.
+- Added native per-launch private directories with 128-bit random names and
+  protected DACLs applied atomically at creation. Exact canonical readback
+  requires only current-account and `SYSTEM` full-control allow entries.
+- Added protected `CREATE_NEW` token/control files. Tokens are restricted to a
+  bounded URL-safe ASCII line, the temporary native write buffer is zeroized,
+  control files must be absent before signaling, and cleanup removes only
+  known files plus the exact empty directory without recursive deletion.
 - Added fail-before-execution cleanup for failed Job assignment plus native
   lifecycle tests for quoting, policy and identity, attempted breakaway,
   unrelated inheritable-handle exclusion, and kill-on-close removal of a
@@ -28,10 +35,9 @@ All notable changes to this pre-release repository are documented here.
   tracker. It rejects duplicate/unknown fields, wrong versions, weakened
   loopback or token claims, line overflow/truncation, PID/port changes,
   impossible transitions, and events after a terminal state.
-- Kept the Phase 2 boundary explicit: bundle validation, private DACL/token
-  files, real-pipe orchestration and authenticated readiness, runtime
-  PID/listener identity, graceful close, and `hello-shiny` integration remain
-  in progress.
+- Kept the Phase 2 boundary explicit: bundle validation, secret generation,
+  real-launcher token consumption, real-pipe orchestration and authenticated
+  readiness, graceful close, and `hello-shiny` integration remain in progress.
 
 ### Transport contract version 2
 

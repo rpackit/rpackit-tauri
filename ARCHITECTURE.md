@@ -20,7 +20,7 @@ ownership and readiness.
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
 | `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
 | `crates/launcher-protocol` | Bounded protocol-2 NDJSON decoding, exact event validation, noise accounting and lifecycle sequence tracking | Process creation, secret handling, readiness network requests, untrusted output retention |
-| `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process identity, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, listener ownership, browser lifecycle |
+| `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process/listener identity, private DACL token/control files, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, readiness requests, browser lifecycle |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
@@ -59,6 +59,29 @@ Job membership fails closed. The variable-length native tables are
 size-bounded, layout-checked, and retrieved with a bounded retry if they grow
 between the sizing and data calls.
 
+The same crate owns a separate native private-files boundary. It reads the
+current process-token SID, builds a protected `D:P` descriptor with exactly
+current-account and `SYSTEM` full-control allow ACEs, and supplies that
+descriptor through `SECURITY_ATTRIBUTES` at creation time. Directories use
+`OICI` inheritance flags; each file receives its own protected DACL. The
+descriptor is therefore present at the instant
+[`CreateDirectoryW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
+or `CreateFileW(CREATE_NEW)` publishes the object, rather than being tightened
+afterward. Both expected and actual descriptors are converted to canonical
+SDDL and compared after `GetNamedSecurityInfoW` readback; `P` denotes the
+[`SE_DACL_PROTECTED`](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format)
+control bit.
+
+Each launch directory has a 128-bit cryptographically random hexadecimal leaf
+under an existing normalized absolute parent. Both fixed file paths are absent
+after the directory gate. Once the owner generates launch secrets and binds
+listeners, the `token` file is created with one validated 16-256-character
+URL-safe ASCII value plus LF; its temporary native write buffer is zeroized.
+The `control` file remains absent at startup and is later created empty with
+`CREATE_NEW`. Cleanup is explicit because it must follow Job termination. It
+removes only these two known paths and then the exact empty directory; an
+unexpected entry prevents removal and is preserved for audit.
+
 If assignment fails, `TerminateProcess` runs while the primary thread is still
 suspended and a bounded wait follows. Any later pre-resume failure terminates
 the assigned Job. The owning Rust value retains both Job and wrapper handles;
@@ -66,17 +89,19 @@ closing the last Job handle kills remaining members. Tests prove an attempted
 breakaway receives `ERROR_ACCESS_DENIED` and that closing the Job removes both
 a fixture wrapper and its spawned descendant.
 
-This layer intentionally has no secret-bearing inputs. The parent's
-environment is inherited, so callers must never place `S`, `P`, or `B` there.
-The later lifecycle owner will pass only a private token-file path—not `S`
-itself—in the R launcher arguments.
+The process-creation API intentionally has no secret-bearing inputs. The
+parent's environment is inherited, so callers must never place `S`, `P`, or
+`B` there. The separate private-files API accepts `S` only to write the
+protected token file and does not retain it in the session value. The later
+lifecycle owner will pass only that file's path—not `S` itself—in the R
+launcher arguments.
 
 The separate safe protocol crate already bounds and parses the prefixed NDJSON
 stream and validates event ordering, fixed loopback/token claims, the selected
 port, and stable runtime PID. The remaining Phase 2 layers validate
-schema-1/protocol-2 resources, create the private per-launch DACL and
-credential/control files, drive that decoder from the real pipe, open and
-retain the reported runtime identity through the existing capture API,
+schema-1/protocol-2 resources, generate `S`, drive that decoder from the real
+pipe, prove the R launcher consumed and deleted the protected token file, open
+and retain the reported runtime identity through the existing capture API,
 apply the existing listener-owner verifier to the real R socket, authenticate
 readiness, and perform bounded graceful shutdown before forced Job
 termination.
@@ -533,8 +558,9 @@ exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
 WebSocket activity-idle shutdown, and independent bidirectional WebSocket
 byte-rate backpressure are tested on both runtime modes. The Phase 2 Windows
-Job/process-creation foundation has its own passing native tests; protocol-2 R
-readiness, real-runtime/listener identity, graceful close, and credential-file
+Job/process-creation, exact process/listener identity, protocol decoder, and
+private DACL file foundations have their own passing native tests; real
+protocol-2 R readiness, graceful close, and post-Job credential/profile
 cleanup are not yet complete.
 
 ## Maintainer rules
