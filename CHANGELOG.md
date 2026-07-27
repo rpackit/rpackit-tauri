@@ -53,6 +53,15 @@ All notable changes to this pre-release repository are documented here.
   authenticated readiness, graceful control-file shutdown, forced Job
   fallback, zero-active-process accounting, and retryable non-recursive
   cleanup.
+- Added `NativeAppOwner`, which validates the bundle, generates one
+  `S`/`P`/`B` set, binds and classifies the authenticated proxy origin, starts
+  the R owner with the same `S`, and releases redacted native-only browser
+  launch material only after readiness. Runtime failures, forced shutdown,
+  and owner drop stop proxy acceptance before Job cleanup.
+- Added deterministic proxy/runtime composition tests for one-time bootstrap,
+  authenticated forwarding, missing/wrong browser credentials, unexpected
+  runtime exit, proxy listener closure, zero tracked connections, and private
+  session cleanup.
 - The lifecycle owner now starts `R/bin/x64/Rscript.exe` directly instead of
   the top-level Windows command-shell wrapper, requires the architecture
   interpreter before process creation, and proves the launched and
@@ -80,12 +89,17 @@ All notable changes to this pre-release repository are documented here.
   graceful, forced, owner-drop, runtime-crash, timeout, occupied-port,
   profile-isolation, Job-empty, private-session, and secret-free evidence
   gates all passed; the complete runner work root was then removed.
+- Extended that remote gate through `NativeAppOwner`; the
+  [reviewed native-composition run](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+  consumed real `B` once, loaded `hello-shiny` through the
+  `P`-authenticated proxy, rejected missing/wrong `P`, closed the proxy and
+  R Job, verified bounded secret-free evidence, and removed all runner storage.
 - Changed manual WebView2 runners to use a uniquely named system-temp Cargo
   target by default and remove it after completion. CI explicitly reuses its
   runner-owned repository target; only a caller-supplied target is retained.
-- Kept the Phase 2 boundary explicit: generated native-metadata validation and
-  proxy/WebView orchestration remain in progress after the released-runtime
-  process-owner gate.
+- Kept the Phase 2 boundary explicit: native proxy/process composition now
+  passes, while WebView/window/profile ownership, generated native-metadata
+  validation, and application generation remain in progress.
 
 ### Transport contract version 2
 
@@ -280,6 +294,6 @@ All notable changes to this pre-release repository are documented here.
 
 ### Known pre-release gaps
 
-- The production Tauri owner still needs to compose the verified R lifecycle
-  with the authenticated proxy/WebView shutdown sequence and generated
-  application resources.
+- The production Tauri owner still needs to connect the verified native
+  proxy/process owner to the WebView/window/profile shutdown sequence and
+  generated application resources.

@@ -3,15 +3,14 @@
 ## Scope and authority
 
 This repository implements the completed Windows Phase 1 spike for rpackit's
-authenticated native loopback transport and the initial Phase 2 native
-process-owner boundary. The authoritative security contract is
+authenticated native loopback transport and a Phase 2 native proxy/process
+composition boundary. The authoritative security contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md).
 This document describes the implementation of transport contract version 2;
 it does not expand or weaken that contract.
 
 The spike is an acceptance harness. It is not yet an application generator,
-supported installer, or complete implementation of protocol-2 R process
-ownership and readiness.
+supported installer, or complete Tauri WebView/window/profile owner.
 
 ## Components
 
@@ -22,7 +21,7 @@ ownership and readiness.
 | `crates/launcher-protocol` | Bounded protocol-2 NDJSON decoding, exact event validation, noise accounting and lifecycle sequence tracking | Process creation, secret handling, readiness network requests, untrusted output retention |
 | `crates/resource-bundle` | Bounded strict schema-1 manifest loading, authenticated protocol-2 contract checks, critical-path containment, app/runtime/package topology and launcher-marker validation | Executing R or app code, downloading runtimes, package installation, process creation |
 | `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process/listener identity, private DACL token/control files, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, readiness requests, browser lifecycle |
-| `crates/windows-lifecycle` | Validated-resource composition, sanitized bundled-R environment, private secret handoff, protocol pipes, exact runtime/listener ownership, authenticated readiness, health polling, graceful/forced stop, Job accounting and retryable cleanup | Proxy/WebView ownership, portable-runtime acquisition, generated application UI |
+| `crates/windows-lifecycle` | Validated-resource composition, one authenticated proxy plus bundled-R owner, private secret handoff, protocol pipes, exact runtime/listener ownership, authenticated readiness, health polling, graceful/forced stop, Job accounting and retryable cleanup | WebView/window/profile ownership, portable-runtime acquisition, generated application UI |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
@@ -159,35 +158,50 @@ cleaning the known files, preserves unexpected entries, and retains the exact
 session for an explicit cleanup retry. Dropping an unclean owner invokes the
 same forced Job path best-effort.
 
+The higher-level `NativeAppOwner` validates before process creation, generates
+one `S`/`P`/`B` set, selects the upstream port, binds the proxy, classifies its
+random `.localhost` hostname, and launches `RuntimeOwner` with the same `S`.
+Only after R passes authenticated readiness can native WebView code obtain a
+redacted `BrowserLaunch` containing the proxy address plus `P` and `B`; the
+upstream secret is never included. Runtime failure stops proxy acceptance
+before forced Job cleanup. Forced shutdown and `Drop` use the same proxy-first
+ordering, while graceful shutdown completes the bounded R protocol before
+draining the proxy. Synthetic integration tests cover authenticated forwarding,
+bootstrap replay, missing/wrong browser credentials, listener closure, and
+session cleanup.
+
 Resource validation continues to use canonical Windows paths. The lifecycle
 boundary derives ordinary drive or UNC aliases for R, then canonicalizes both
 forms and requires identical targets before launch. Unsupported device paths
 or aliases that do not resolve identically fail before process creation.
 
-The synthetic fixture exercises these native boundaries without bundling R.
-By itself it proves orchestration behavior, not compatibility with the
+The synthetic fixtures exercise these native boundaries without bundling R.
+By themselves they prove orchestration behavior, not compatibility with the
 released portable runtime, generated `launcher.R`, Shiny, or the
-proxy/WebView window-close sequence. The separate real-runtime gate below
-supplies the process-owner compatibility evidence.
+WebView/window/profile sequence. The separate real-runtime gate below supplies
+the proxy/process compatibility evidence.
 
 The released-runtime workflow supplies the next evidence layer without adding
 large repository or workstation state. It verifies the immutable SHA-256 of
 the existing portable-R `v4.6.1` Release, checks out immutable rpackit and
 `hello-shiny` commits, installs bundle dependencies remotely, and runs the
-same owner against the generated launcher and real Shiny page. The acceptance
-target is ignored during ordinary Cargo tests and refuses to run outside
-GitHub Actions. Its runner work root contains the archive, both runtime trees,
-system and bundled package libraries, Cargo output, hostile profile probes,
-and private sessions; one verified recursive cleanup removes that exact
-runner-temp child after the small evidence files are uploaded.
+direct runtime owner and combined native owner against the generated launcher
+and real Shiny page. The combined scenario consumes `B` once, loads the page
+through the `P`-authenticated proxy, rejects absent/wrong `P`, and verifies
+both proxy and Job cleanup. The acceptance target is ignored during ordinary
+Cargo tests and refuses to run outside GitHub Actions. Its runner work root
+contains the archive, both runtime trees, system and bundled package libraries,
+Cargo output, hostile profile probes, and private sessions; one verified
+recursive cleanup removes that exact runner-temp child after the small
+evidence files are uploaded.
 
 The
-[first reviewed passing run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
-at commit `10359b9` completed the native interpreter/package probe and the
-authenticated, graceful, forced, owner-drop, runtime-crash, timeout,
-occupied-port, hostile-profile, Job-empty, and session-cleanup scenarios.
-This closes the real-R process-owner evidence layer, not the later
-proxy/WebView composition or generated application.
+[reviewed native-composition run](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+at commit `7d116e1` completed the native interpreter/package probe, combined
+authenticated proxy scenario, graceful, forced, owner-drop, runtime-crash,
+timeout, occupied-port, hostile-profile, Job-empty, and session-cleanup
+scenarios. This closes the real-R proxy/process composition layer, not the
+later WebView/window/profile owner or generated application.
 
 ## Secret and origin model
 
@@ -645,10 +659,11 @@ resource validator, Job/process-creation, exact process/listener identity,
 protocol decoder, and private DACL file foundations have their own passing
 tests. A remote-only gate now implements real protocol-2 R readiness,
 authenticated `hello-shiny`, graceful/forced/crash/timeout behavior, and
-post-Job profile/session cleanup. Its
-[reviewed passing run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
-now provides that evidence. It does not yet prove the combined proxy/WebView
-window-close owner.
+post-Job profile/session cleanup, both directly and through the authenticated
+native proxy owner. Its
+[reviewed passing run](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+now provides that evidence. It does not yet prove the WebView/window/profile
+close owner.
 
 ## Maintainer rules
 

@@ -38,9 +38,10 @@ has passed on both the development Runtime `150.0.4078.99` and the exact
 reviewed x64 Fixed Version Runtime `149.0.4022.98`, in Debug and Release.
 The fixed reports contain no unproven release gate and record
 `phase1_release_ready: true`. The separate released portable-R process-owner
-lifecycle described below also has a reviewed passing run. This assurance
-does not cover the combined Phase 2 proxy/WebView owner, a generated
-application, an installer, or code signing.
+lifecycle and authenticated native proxy/process composition described below
+also have a reviewed passing run. This assurance does not cover the
+WebView/window/profile owner, a generated application, an installer, or code
+signing.
 Exact-address listener takeover is rejected. The initial Phase 2 native
 resource boundary is implemented and tested separately: bounded strict JSON
 accepts only schema 1 and the complete authenticated protocol-2 Windows
@@ -83,6 +84,17 @@ and non-protocol stdout are never retained. This fixture is deliberately not
 evidence about real R, generated launcher behavior, Shiny, or the proxy/WebView
 shutdown sequence.
 
+`NativeAppOwner` now generates and owns one proxy/runtime launch. It binds and
+classifies the random loopback browser origin before starting R, uses the same
+`S` for direct readiness and proxy forwarding, exposes only redacted
+native-memory handles for `P` and `B` after readiness, and never exposes `S`
+through browser launch material. Runtime failure, forced shutdown, and owner
+drop stop proxy acceptance before Job cleanup. Synthetic composition tests
+prove one-time bootstrap, authenticated forwarding, missing/wrong browser
+credential denial, proxy closure, and empty private sessions. This is native
+proxy/process evidence; it does not yet own a real WebView, window-close
+interception, cookie deletion, or profile removal.
+
 The validator keeps canonical paths as the security identity, while the
 lifecycle owner gives R only revalidated ordinary drive or UNC aliases.
 Removing a Windows verbatim prefix must canonicalize back to the identical
@@ -97,12 +109,13 @@ identities, package versions, booleans, and counters; token values, PIDs,
 runner paths, raw output, and bundle contents are rejected. The complete
 runner subtree is removed after a seven-day evidence artifact is uploaded.
 The
-[reviewed run 30233439589](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
-passed the native interpreter/package probe, authenticated page and credential
-denials, graceful/forced/owner-drop/runtime-crash/timeout/occupied-port
-scenarios, profile isolation, zero-member Job checks, private-session cleanup,
-and the bounded secret-free evidence check. This closes only the real-R
-process-owner gate.
+[reviewed run 30234829826](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+passed the native interpreter/package probe, real `B` bootstrap and
+`P`-authenticated proxy page, direct and proxy credential denials,
+graceful/forced/owner-drop/runtime-crash/timeout/occupied-port scenarios,
+profile isolation, proxy closure, zero-member Job checks, private-session
+cleanup, and the bounded secret-free evidence check. This closes the real-R
+native proxy/process composition gate only.
 
 The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
 creation, matching the documented

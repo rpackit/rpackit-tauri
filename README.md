@@ -4,10 +4,11 @@ Maintained native Tauri templates and the security-critical loopback transport
 for [rpackit](https://github.com/rpackit/rpackit).
 
 The repository contains the completed Windows **Phase 1 transport spike** and
-a fail-closed **Phase 2 process-owner foundation** whose released portable-R
-and `hello-shiny` lifecycle gate now passes. It remains an executable
-acceptance harness, not a supported application generator or installer. The
-authoritative contract is
+a fail-closed **Phase 2 native foundation**. One owner now composes the
+authenticated proxy with the released portable-R/`hello-shiny` process
+lifecycle, and its remote gate passes. It remains an executable acceptance
+harness, not a supported application generator or installer. The authoritative
+contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md);
 this implementation follows transport contract version 2.
 
@@ -277,12 +278,26 @@ members, joins both pipe monitors, and removes only the known session files
 and now-empty directory. An unexpected entry is preserved and
 `retry_private_cleanup()` keeps cleanup explicit and retryable.
 
+`NativeAppOwner` is the higher-level native-shell boundary. It validates the
+bundle, generates one independent `S`/`P`/`B` set, selects the R port, binds
+the authenticated proxy, classifies the random `.localhost` hostname, and
+then launches the already validated R bundle with the same `S`. It returns
+only after authenticated R readiness. Its `BrowserLaunch` value exposes the
+random proxy address plus native-only `P` and `B` handles, never `S`; Debug
+output redacts both credentials. Runtime-health failure stops the proxy before
+forced Job cleanup, forced shutdown and owner drop also stop browser traffic
+first, and graceful close cleans the runtime before draining the proxy.
+Retryable private-session cleanup remains owned rather than silently discarded.
+
 A synthetic `Rscript.exe` acceptance fixture passes authenticated startup,
 graceful close, forced fallback when control is ignored, owner-drop
 termination, malformed protocol, readiness timeout, occupied-port rejection,
 post-readiness process exit detection, and non-recursive cleanup retry. The
-fixture also verifies the actual isolated child environment. It contains no
-portable R and is not a substitute for the released-runtime gate.
+fixture also verifies the actual isolated child environment. Separate
+composition tests prove one-time bootstrap, authenticated proxy forwarding,
+missing-session rejection, proxy-first crash cleanup, zero tracked sessions,
+and listener closure. These fixtures contain no portable R and are not a
+substitute for the released-runtime gate.
 
 The separate `Released portable R lifecycle gate` workflow is the real-runtime
 boundary. It runs only on GitHub-hosted Windows, checks out pinned rpackit and
@@ -294,17 +309,21 @@ receive `403`, graceful and forced Job shutdown leave zero members, owner drop
 removes the process tree and private session, an exact runtime crash is
 detected, a one-millisecond startup deadline fails closed, an occupied port
 does not disturb its contender, the directly launched interpreter is the
-protocol-reported runtime, and an ambient hostile R profile does not run.
+protocol-reported runtime, and an ambient hostile R profile does not run. It
+also drives the real page through `NativeAppOwner`: `B` succeeds exactly once,
+the host-only `P` authenticates the proxy, missing and wrong `P` receive
+`401`, and combined shutdown closes both the proxy and R Job.
 Only two bounded, path-free, secret-free JSON files are retained for seven
 days. The downloaded archive, extracted runtime, copied bundle, package
 libraries, Cargo target, profiles, and sessions are deleted together before
 the runner finishes.
 
 This is deliberately not a full Phase 2 claim. Generating the complete native
-Tauri launch state around the proxy/WebView remains required. The
-[first reviewed passing released-runtime run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
-at commit `10359b9` closes the real-R process-owner gate without claiming the
-combined shell or an installer.
+Tauri WebView/window/profile owner around this native boundary remains
+required. The
+[reviewed native-composition run](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+at commit `7d116e1` closes the real-R proxy/process composition gate without
+claiming the WebView shell, a generated application, or an installer.
 
 ## Development
 
@@ -538,10 +557,11 @@ Phase 2 now has strict schema-1 resource validation, verified Windows
 Job/process creation, exact runtime PID/listener capture, strict protocol-2
 decoding, atomically restricted token/control files, and one integrated
 synthetic lifecycle owner with authenticated readiness and deterministic
-shutdown. A remote-only released portable-R/`hello-shiny` workflow now owns
-the real-runtime matrix and all of its temporary storage. Its
-[reviewed run 30233439589](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
-passed the complete matrix and cleanup, closing this real-R gate. Native shell
+shutdown. `NativeAppOwner` now composes that owner with the authenticated
+proxy, and a remote-only released portable-R/`hello-shiny` workflow owns the
+real-runtime matrix and all of its temporary storage. Its
+[reviewed run 30234829826](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+passed the direct and proxied real-R matrices plus cleanup. WebView/window
 composition, resource generation, and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.
