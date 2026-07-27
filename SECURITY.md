@@ -38,10 +38,11 @@ has passed on both the development Runtime `150.0.4078.99` and the exact
 reviewed x64 Fixed Version Runtime `149.0.4022.98`, in Debug and Release.
 The fixed reports contain no unproven release gate and record
 `phase1_release_ready: true`. The separate released portable-R process-owner
-lifecycle and authenticated native proxy/process composition described below
-also have a reviewed passing run. This assurance does not cover the
-WebView/window/profile owner, a generated application, an installer, or code
-signing.
+lifecycle, authenticated native proxy/process composition, and maintained
+Tauri WebView/window/profile owner described below also have a reviewed
+passing run. This assurance covers the development owner and its real-R
+close-and-cleanup path; it does not cover a generated application, installer,
+clean-machine installation, or code signing.
 Exact-address listener takeover is rejected. The initial Phase 2 native
 resource boundary is implemented and tested separately: bounded strict JSON
 accepts only schema 1 and the complete authenticated protocol-2 Windows
@@ -91,9 +92,18 @@ native-memory handles for `P` and `B` after readiness, and never exposes `S`
 through browser launch material. Runtime failure, forced shutdown, and owner
 drop stop proxy acceptance before Job cleanup. Synthetic composition tests
 prove one-time bootstrap, authenticated forwarding, missing/wrong browser
-credential denial, proxy closure, and empty private sessions. This is native
-proxy/process evidence; it does not yet own a real WebView, window-close
-interception, cookie deletion, or profile removal.
+credential denial, proxy closure, and empty private sessions.
+
+`SecureWebviewOwner` accepts that launch material only after an application
+identity/runtime/policy preflight. It creates one hidden hardened WebView under
+a random exact profile, installs native navigation and external-scheme guards
+before sending `B`, verifies the resulting `P` cookie and flags before
+navigating to the application, and shows the window only after the
+authenticated document finishes. The thin Tauri shell intercepts close and
+exit once, hides the UI, completes proxy/R shutdown, deletes and verifies the
+absence of `P`, queues the browsing-data clear request, destroys the window,
+and removes the exact profile with bounded retries. Debug output, errors, and
+evidence omit credentials and private paths.
 
 The validator keeps canonical paths as the security identity, while the
 lifecycle owner gives R only revalidated ordinary drive or UNC aliases.
@@ -109,13 +119,18 @@ identities, package versions, booleans, and counters; token values, PIDs,
 runner paths, raw output, and bundle contents are rejected. The complete
 runner subtree is removed after a seven-day evidence artifact is uploaded.
 The
-[reviewed run 30234829826](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
+[reviewed run 30237185375](https://github.com/rpackit/rpackit-tauri/actions/runs/30237185375)
 passed the native interpreter/package probe, real `B` bootstrap and
 `P`-authenticated proxy page, direct and proxy credential denials,
 graceful/forced/owner-drop/runtime-crash/timeout/occupied-port scenarios,
 profile isolation, proxy closure, zero-member Job checks, private-session
-cleanup, and the bounded secret-free evidence check. This closes the real-R
-native proxy/process composition gate only.
+cleanup, and the bounded secret-free evidence check. It additionally launched
+the maintained Tauri shell against the same real bundle, verified the
+authenticated application document, and proved graceful runtime, proxy, Job,
+session, cookie, accepted browsing-data clear request, window, and
+WebView-profile cleanup. This
+closes the maintained real-R native application-owner gate only; generated
+application resources and installer behavior remain outside the assurance.
 
 The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
 creation, matching the documented

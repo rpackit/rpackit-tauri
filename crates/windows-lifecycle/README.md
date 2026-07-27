@@ -66,5 +66,8 @@ sessions. Its
 [reviewed native-composition run](https://github.com/rpackit/rpackit-tauri/actions/runs/30234829826)
 passed every direct real-R scenario plus one-time real bootstrap,
 `P`-authenticated proxy loading, credential denials, and combined cleanup.
-That evidence does not extend to the later WebView/window/profile owner or a
-generated application.
+The later
+[reviewed full-owner run](https://github.com/rpackit/rpackit-tauri/actions/runs/30237185375)
+also composed this owner with the maintained Tauri WebView/window/profile
+owner and proved complete real-runtime close and cleanup. Neither run claims a
+generated application or installer.

@@ -58,6 +58,16 @@ All notable changes to this pre-release repository are documented here.
   the R owner with the same `S`, and releases redacted native-only browser
   launch material only after readiness. Runtime failures, forced shutdown,
   and owner drop stop proxy acceptance before Job cleanup.
+- Added the Windows-only `SecureWebviewOwner`. It verifies application
+  identity, WebView2 runtime minimum, and environment/policy overrides before
+  R starts; creates one hidden hardened WebView with a random scoped profile;
+  performs the exact native `B` bootstrap; verifies the resulting `P` cookie;
+  and owns authenticated root navigation plus bounded cookie, browsing-data,
+  window, and profile cleanup.
+- Added a maintained thin Tauri application shell that composes
+  `NativeAppOwner` and `SecureWebviewOwner`, intercepts window/application
+  close once, polls runtime health, orders graceful or forced shutdown, and
+  writes only bounded path-free secret-free evidence.
 - Added deterministic proxy/runtime composition tests for one-time bootstrap,
   authenticated forwarding, missing/wrong browser credentials, unexpected
   runtime exit, proxy listener closure, zero tracked connections, and private
@@ -80,9 +90,9 @@ All notable changes to this pre-release repository are documented here.
   source commits and the existing runtime Release SHA-256, prepares the real
   bundle only under `runner.temp`, exercises authenticated content plus
   graceful/forced/crash/timeout/occupied-port/profile-isolation paths, uploads
-  only two small secret-free JSON evidence files, and deletes the archive,
+  only three small secret-free JSON evidence files, and deletes the archive,
   extracted and copied runtimes, package libraries, Cargo target, and private
-  sessions.
+  sessions and WebView profiles.
 - Recorded the first reviewed passing released-runtime
   [run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589).
   The pinned native R/package probe and the authenticated, credential-denial,
@@ -94,12 +104,20 @@ All notable changes to this pre-release repository are documented here.
   consumed real `B` once, loaded `hello-shiny` through the
   `P`-authenticated proxy, rejected missing/wrong `P`, closed the proxy and
   R Job, verified bounded secret-free evidence, and removed all runner storage.
+- Extended the same gate through the maintained Tauri shell; the
+  [reviewed full-owner run](https://github.com/rpackit/rpackit-tauri/actions/runs/30237185375)
+  loaded the real authenticated application document, then verified graceful
+  runtime shutdown, proxy closure, an empty Job, private-session removal,
+  cookie deletion, acceptance of the browsing-data clear request, window
+  destruction, exact profile removal, secret-free evidence, and complete
+  runner-storage cleanup.
 - Changed manual WebView2 runners to use a uniquely named system-temp Cargo
   target by default and remove it after completion. CI explicitly reuses its
   runner-owned repository target; only a caller-supplied target is retained.
-- Kept the Phase 2 boundary explicit: native proxy/process composition now
-  passes, while WebView/window/profile ownership, generated native-metadata
-  validation, and application generation remain in progress.
+- Kept the Phase 2 boundary explicit: maintained native
+  proxy/process/WebView/window/profile ownership now passes, while generated
+  native-metadata validation, application generation, installers,
+  clean-machine execution, and signing remain in progress.
 
 ### Transport contract version 2
 
