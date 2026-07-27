@@ -7,10 +7,12 @@ on:
       - ".github/workflows/released-runtime.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "apps/windows-shell/**"
       - "crates/launcher-protocol/**"
       - "crates/resource-bundle/**"
       - "crates/windows-launcher/**"
       - "crates/windows-lifecycle/**"
+      - "crates/windows-webview/**"
       - "tests/cleanup-released-runtime.ps1"
       - "tests/prepare-released-runtime.R"
       - "tests/prepare-released-runtime.ps1"
@@ -75,6 +77,8 @@ jobs:
             "RPACKIT_RELEASE_BUNDLE=$(Join-Path $workRoot 'hello-shiny bundle')",
             "RPACKIT_RELEASE_SESSIONS=$(Join-Path $workRoot 'private sessions')",
             "RPACKIT_RELEASE_EVIDENCE=$(Join-Path $workRoot 'evidence\lifecycle-evidence.json')",
+            "RPACKIT_SHELL_EVIDENCE=$(Join-Path $workRoot 'evidence\native-shell-evidence.json')",
+            "RPACKIT_SHELL_PROFILES=$(Join-Path $workRoot 'webview profiles')",
             "RPACKIT_PROFILE_MARKER=$(Join-Path $workRoot 'ambient-profile-executed')",
             "CARGO_TARGET_DIR=$(Join-Path $workRoot 'cargo target')"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -104,6 +108,64 @@ jobs:
             --exact released_portable_r_and_hello_shiny_pass_lifecycle_matrix `
             --nocapture
 
+      - name: Build the native Tauri application shell
+        shell: powershell
+        run: |
+          cargo build `
+            -p rpackit-windows-shell `
+            --locked
+
+      - name: Run real R through the native Tauri WebView owner
+        shell: powershell
+        run: |
+          $null = New-Item `
+            -ItemType Directory `
+            -Path "$env:RPACKIT_SHELL_PROFILES"
+          $shell = Join-Path `
+            "$env:CARGO_TARGET_DIR" `
+            "debug\rpackit-windows-shell.exe"
+          & $shell `
+            --bundle "$env:RPACKIT_RELEASE_BUNDLE" `
+            --session-parent "$env:RPACKIT_RELEASE_SESSIONS" `
+            --profile-parent "$env:RPACKIT_SHELL_PROFILES" `
+            --evidence "$env:RPACKIT_SHELL_EVIDENCE" `
+            --close-after-ready
+          if ($LASTEXITCODE -ne 0) {
+            throw "The native Tauri WebView owner failed."
+          }
+          $report = Get-Content `
+            -LiteralPath "$env:RPACKIT_SHELL_EVIDENCE" `
+            -Raw | ConvertFrom-Json
+          foreach ($gate in @(
+            "success",
+            "graceful_runtime_shutdown",
+            "proxy_stopped",
+            "job_empty",
+            "private_session_removed",
+            "session_cookie_absent",
+            "browsing_data_clear_queued",
+            "window_destroyed",
+            "profile_removed"
+          )) {
+            if ($report.$gate -ne $true) {
+              throw "The native Tauri WebView report failed a required gate."
+            }
+          }
+          if (@(
+            Get-ChildItem `
+              -LiteralPath "$env:RPACKIT_RELEASE_SESSIONS" `
+              -Force
+          ).Count -ne 0) {
+            throw "The native Tauri shell retained a private R session."
+          }
+          if (@(
+            Get-ChildItem `
+              -LiteralPath "$env:RPACKIT_SHELL_PROFILES" `
+              -Force
+          ).Count -ne 0) {
+            throw "The native Tauri shell retained a WebView profile."
+          }
+
       - name: Verify evidence is small and secret-free
         if: always()
         shell: powershell
@@ -115,8 +177,8 @@ jobs:
           $files = @(
             Get-ChildItem -LiteralPath $evidenceDirectory -Filter "*.json" -File
           )
-          if ($files.Count -ne 2) {
-            throw "Exactly two released-runtime evidence files are required."
+          if ($files.Count -ne 3) {
+            throw "Exactly three released-runtime evidence files are required."
           }
           foreach ($file in $files) {
             if ($file.Length -gt 65536) {
