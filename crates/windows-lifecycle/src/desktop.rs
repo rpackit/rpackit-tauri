@@ -17,7 +17,7 @@ use super::{LifecycleError, LifecycleLimits, RuntimeOwner, ShutdownReport, selec
 /// Native-only browser launch material for one authenticated proxy.
 ///
 /// This value intentionally omits the upstream secret. The session and
-/// bootstrap credentials may be exposed only to trusted native WebView setup
+/// bootstrap credentials may be exposed only to trusted native `WebView` setup
 /// code and must be released when that browser session is destroyed.
 #[must_use = "browser launch material must remain native-only"]
 pub struct BrowserLaunch {
@@ -99,7 +99,7 @@ impl NativeAppOwner {
     /// Validates resources, binds the authenticated proxy, and starts bundled
     /// R with the same independently generated transport credentials.
     ///
-    /// No WebView should be created until this method succeeds. The proxy is
+    /// No `WebView` should be created until this method succeeds. The proxy is
     /// stopped if runtime startup or hostname classification fails.
     ///
     /// # Errors
@@ -156,7 +156,7 @@ impl NativeAppOwner {
         }
     }
 
-    /// Returns native-only material needed to install the initial WebView
+    /// Returns native-only material needed to install the initial `WebView`
     /// cookie and navigate to the authenticated origin.
     ///
     /// # Errors
@@ -205,7 +205,7 @@ impl NativeAppOwner {
     /// drains and closes the proxy.
     ///
     /// A Tauri caller must prevent immediate application exit while awaiting
-    /// this method, then destroy the WebView and remove its per-launch profile
+    /// this method, then destroy the `WebView` and remove its per-launch profile
     /// before releasing any [`BrowserLaunch`] credential clones.
     ///
     /// # Errors
