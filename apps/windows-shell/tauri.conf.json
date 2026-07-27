@@ -15,10 +15,14 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
     "icon": ["../windows-spike/icons/icon.ico"],
     "windows": {
-      "minimumWebview2Version": "149.0.4022.98"
+      "minimumWebview2Version": "149.0.4022.98",
+      "nsis": {
+        "installMode": "currentUser"
+      }
     }
   }
 }

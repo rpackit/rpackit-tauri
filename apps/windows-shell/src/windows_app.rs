@@ -2,8 +2,9 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::Write,
+    os::windows::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -21,19 +22,35 @@ use rpackit_windows_webview::{
     WebviewShutdownReport,
 };
 use serde::Serialize;
-use tauri::{RunEvent, WindowEvent, Wry};
+use tauri::{Manager, RunEvent, WindowEvent, Wry};
 use tokio::sync::mpsc;
 
 const APPLICATION_ID: &str = "dev.rpackit.shell";
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_EVIDENCE_BYTES: usize = 64 * 1024;
+const REPARSE_POINT_ATTRIBUTE: u32 = 0x400;
 
 #[derive(Clone)]
+struct ParsedOptions {
+    launch: LaunchMode,
+    evidence: Option<PathBuf>,
+    close_after_ready: bool,
+}
+
+#[derive(Clone)]
+enum LaunchMode {
+    Packaged,
+    Explicit {
+        bundle: PathBuf,
+        session_parent: PathBuf,
+        profile_parent: PathBuf,
+    },
+}
+
 struct ShellOptions {
     bundle: PathBuf,
     session_parent: PathBuf,
     profile_parent: PathBuf,
-    evidence: Option<PathBuf>,
     close_after_ready: bool,
 }
 
@@ -53,6 +70,7 @@ struct ShellSuccess {
 #[derive(Clone, Copy)]
 enum ShellFailure {
     Preflight,
+    PackagedPaths,
     NativeStartup,
     BrowserMaterial,
     WebviewStartup,
@@ -64,6 +82,7 @@ impl ShellFailure {
     const fn stage(self) -> &'static str {
         match self {
             Self::Preflight => "webview_preflight",
+            Self::PackagedPaths => "packaged_paths",
             Self::NativeStartup => "native_startup",
             Self::BrowserMaterial => "browser_material",
             Self::WebviewStartup => "webview_startup",
@@ -132,9 +151,9 @@ impl ShellEvidence {
 pub(crate) fn main() {
     let Ok(options) = parse_options(std::env::args_os().skip(1)) else {
         eprintln!(
-            "usage: rpackit-windows-shell --bundle <dir> \
-             --session-parent <dir> --profile-parent <dir> \
-             [--evidence <file> --close-after-ready]"
+            "usage: rpackit-windows-shell \
+             [--evidence <file> --close-after-ready] \
+             [--bundle <dir> --session-parent <dir> --profile-parent <dir>]"
         );
         std::process::exit(2);
     };
@@ -169,8 +188,12 @@ pub(crate) fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let exit_handle = handle.clone();
+            let options = resolve_options(app, options);
             tauri::async_runtime::spawn(async move {
-                let outcome = run_shell(handle, options, signal_receiver).await;
+                let outcome = match options {
+                    Ok(options) => run_shell(handle, options, signal_receiver).await,
+                    Err(failure) => Err(failure),
+                };
                 let (mut exit_code, evidence) = match outcome {
                     Ok(success) => (0, ShellEvidence::success(success)),
                     Err(failure) => (1, ShellEvidence::failure(failure)),
@@ -294,7 +317,7 @@ fn request_cleanup(
     }
 }
 
-fn parse_options(mut arguments: impl Iterator<Item = OsString>) -> Result<ShellOptions, ()> {
+fn parse_options(mut arguments: impl Iterator<Item = OsString>) -> Result<ParsedOptions, ()> {
     let mut bundle = None;
     let mut session_parent = None;
     let mut profile_parent = None;
@@ -318,10 +341,17 @@ fn parse_options(mut arguments: impl Iterator<Item = OsString>) -> Result<ShellO
             return Err(());
         }
     }
-    let options = ShellOptions {
-        bundle: bundle.ok_or(())?,
-        session_parent: session_parent.ok_or(())?,
-        profile_parent: profile_parent.ok_or(())?,
+    let launch = match (bundle, session_parent, profile_parent) {
+        (None, None, None) => LaunchMode::Packaged,
+        (Some(bundle), Some(session_parent), Some(profile_parent)) => LaunchMode::Explicit {
+            bundle,
+            session_parent,
+            profile_parent,
+        },
+        _ => return Err(()),
+    };
+    let options = ParsedOptions {
+        launch,
         evidence,
         close_after_ready,
     };
@@ -340,11 +370,16 @@ fn set_path_option(slot: &mut Option<PathBuf>, value: Option<OsString>) -> Resul
     Ok(())
 }
 
-fn validate_options(options: &ShellOptions) -> Result<(), ()> {
-    if !options.bundle.is_dir()
-        || !options.session_parent.is_dir()
-        || !options.profile_parent.is_dir()
-        || options.close_after_ready != options.evidence.is_some()
+fn validate_options(options: &ParsedOptions) -> Result<(), ()> {
+    if options.close_after_ready != options.evidence.is_some() {
+        return Err(());
+    }
+    if let LaunchMode::Explicit {
+        bundle,
+        session_parent,
+        profile_parent,
+    } = &options.launch
+        && (!bundle.is_dir() || !session_parent.is_dir() || !profile_parent.is_dir())
     {
         return Err(());
     }
@@ -354,6 +389,58 @@ fn validate_options(options: &ShellOptions) -> Result<(), ()> {
             || evidence.file_name() == Some(OsStr::new("")))
     {
         return Err(());
+    }
+    Ok(())
+}
+
+fn resolve_options(
+    app: &tauri::App<Wry>,
+    options: ParsedOptions,
+) -> Result<ShellOptions, ShellFailure> {
+    let (bundle, session_parent, profile_parent) = match options.launch {
+        LaunchMode::Explicit {
+            bundle,
+            session_parent,
+            profile_parent,
+        } => (bundle, session_parent, profile_parent),
+        LaunchMode::Packaged => {
+            let bundle = app
+                .path()
+                .resource_dir()
+                .map_err(|_| ShellFailure::PackagedPaths)?
+                .join("resources");
+            let app_data = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|_| ShellFailure::PackagedPaths)?;
+            ensure_directory(&app_data)?;
+            let session_parent = app_data.join("sessions");
+            let profile_parent = app_data.join("profiles");
+            ensure_directory(&session_parent)?;
+            ensure_directory(&profile_parent)?;
+            if !bundle.is_dir() {
+                return Err(ShellFailure::PackagedPaths);
+            }
+            (bundle, session_parent, profile_parent)
+        }
+    };
+    Ok(ShellOptions {
+        bundle,
+        session_parent,
+        profile_parent,
+        close_after_ready: options.close_after_ready,
+    })
+}
+
+fn ensure_directory(path: &Path) -> Result<(), ShellFailure> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(ShellFailure::PackagedPaths),
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| ShellFailure::PackagedPaths)?;
+    if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT_ATTRIBUTE != 0 {
+        return Err(ShellFailure::PackagedPaths);
     }
     Ok(())
 }
@@ -378,7 +465,7 @@ fn write_evidence(path: &Path, evidence: &ShellEvidence) -> Result<(), ()> {
 mod tests {
     use std::ffi::OsString;
 
-    use super::parse_options;
+    use super::{LaunchMode, parse_options};
 
     #[test]
     fn options_require_exact_acceptance_pairing() -> Result<(), Box<dyn std::error::Error>> {
@@ -399,6 +486,10 @@ mod tests {
         ]
         .into_iter();
         assert!(parse_options(arguments).is_ok());
+        assert!(matches!(
+            parse_options(Vec::<OsString>::new().into_iter()).map(|options| options.launch),
+            Ok(LaunchMode::Packaged)
+        ));
         Ok(())
     }
 }

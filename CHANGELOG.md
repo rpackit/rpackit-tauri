@@ -13,6 +13,10 @@ All notable changes to this pre-release repository are documented here.
 
 ### Generated-project template
 
+- Made generated applications packaging-ready with a current-user NSIS target.
+  Installed applications now resolve their bundled resources and private
+  session/profile parents automatically, while explicit paths remain available
+  for development and acceptance runs.
 - Added the versioned Windows generated-project template contract and reduced
   workspace manifest. Tagged template releases now publish a small,
   checksum-addressed source archive without binaries, installers, or portable
