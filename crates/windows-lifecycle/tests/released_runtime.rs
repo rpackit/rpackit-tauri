@@ -4,6 +4,7 @@
 
 use std::env;
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
@@ -13,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rpackit_transport::TransportSecrets;
+use rpackit_windows_launcher::{LaunchCommand, LaunchEnvironment, launch};
 use rpackit_windows_lifecycle::{
     LifecycleError, LifecycleLimits, RuntimeOwner, ShutdownKind, ShutdownReport,
     select_upstream_port,
@@ -24,6 +26,23 @@ const MAX_HTTP_RESPONSE_BYTES: u64 = 1024 * 1024;
 const EXPECTED_PAGE_MARKER: &[u8] = b"Hello from rpackit";
 const WRONG_CREDENTIAL: &str = "wrong-rpackit-credential-0123456789";
 const AMBIENT_LEGACY_CREDENTIAL: &str = "ambient-legacy-token-must-not-survive";
+const PROBE_TIMEOUT_EXIT_CODE: u32 = 0x5250_4B50;
+const PROBE_AMBIENT_R_VARIABLES: [&str; 14] = [
+    "R_ARCH",
+    "R_DOC_DIR",
+    "R_ENVIRON",
+    "R_ENVIRON_USER",
+    "R_HOME",
+    "R_INCLUDE_DIR",
+    "R_LIBS",
+    "R_LIBS_SITE",
+    "R_LIBS_USER",
+    "R_PROFILE",
+    "R_PROFILE_USER",
+    "R_SHARE_DIR",
+    "RPACKIT_LAUNCH_PROTOCOL",
+    "RPACKIT_SESSION_TOKEN",
+];
 
 type GateResult<T> = Result<T, Box<dyn Error>>;
 
@@ -91,12 +110,38 @@ struct HttpResponse {
     bytes: Vec<u8>,
 }
 
+struct NativeProbeReport {
+    exit_code: u32,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+    job_empty: bool,
+}
+
 #[test]
 #[ignore = "downloads and prepares released portable R only in GitHub Actions"]
 #[allow(clippy::too_many_lines)]
 fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()> {
     let config = GateConfig::from_environment()?;
     let mut scenarios = Map::new();
+
+    let native_probe = probe_native_interpreter(&config)?;
+    eprintln!(
+        "released-runtime native R probe: exit_code={}, stdout_bytes={}, \
+         stderr_bytes={}, job_empty={}",
+        native_probe.exit_code,
+        native_probe.stdout_bytes,
+        native_probe.stderr_bytes,
+        native_probe.job_empty
+    );
+    scenarios.insert(
+        "native_interpreter_package_probe".to_owned(),
+        json!({
+            "exit_code": native_probe.exit_code,
+            "stdout_bytes": native_probe.stdout_bytes,
+            "stderr_bytes": native_probe.stderr_bytes,
+            "job_empty": native_probe.job_empty
+        }),
+    );
 
     let (mut graceful_owner, graceful_secrets) = launch_owner(&config, normal_limits())?;
     ensure(
@@ -308,6 +353,120 @@ fn launch_owner(
         limits,
     )?;
     Ok((owner, secrets))
+}
+
+#[allow(clippy::too_many_lines)]
+fn probe_native_interpreter(config: &GateConfig) -> GateResult<NativeProbeReport> {
+    let resources = config.bundle.join("resources");
+    let runtime_home = resources.join("R");
+    let runtime_bin = runtime_home.join("bin");
+    let architecture_bin = runtime_bin.join("x64");
+    let interpreter = architecture_bin.join("Rscript.exe");
+    let library = runtime_home.join("library");
+    ensure(
+        interpreter.is_file() && library.is_dir(),
+        "the native interpreter probe topology was incomplete",
+    )?;
+
+    let mut environment = LaunchEnvironment::from_current()?;
+    for name in PROBE_AMBIENT_R_VARIABLES {
+        let _ = environment.remove(name)?;
+    }
+    environment.set("R_HOME", runtime_home.as_os_str())?;
+    environment.set("R_LIBS", library.as_os_str())?;
+    environment.set("R_LIBS_SITE", library.as_os_str())?;
+    environment.set("R_LIBS_USER", library.as_os_str())?;
+    environment.set("RPACKIT_LAUNCH_PROTOCOL", "2")?;
+    let mut path = OsString::from(architecture_bin.as_os_str());
+    path.push(OsStr::new(";"));
+    path.push(runtime_bin.as_os_str());
+    if let Some(ambient_path) = env::var_os("PATH")
+        && !ambient_path.is_empty()
+    {
+        path.push(OsStr::new(";"));
+        path.push(ambient_path);
+    }
+    environment.set("PATH", path)?;
+
+    let expression = concat!(
+        "if (!requireNamespace('jsonlite', quietly=TRUE)) ",
+        "quit(save='no', status=11L, runLast=FALSE);",
+        "if (!requireNamespace('later', quietly=TRUE)) ",
+        "quit(save='no', status=12L, runLast=FALSE);",
+        "if (!requireNamespace('shiny', quietly=TRUE)) ",
+        "quit(save='no', status=13L, runLast=FALSE);",
+        "quit(save='no', status=0L, runLast=FALSE)"
+    );
+    let command = LaunchCommand::new(&interpreter, &resources)
+        .args([
+            OsString::from("--vanilla"),
+            OsString::from("-e"),
+            OsString::from(expression),
+        ])
+        .environment(environment);
+    let mut process = launch(&command)?;
+    let stdout = process
+        .take_stdout()
+        .ok_or_else(|| gate_error("the native probe stdout pipe was unavailable"))?;
+    let stderr = process
+        .take_stderr()
+        .ok_or_else(|| gate_error("the native probe stderr pipe was unavailable"))?;
+    let stdout_thread = thread::Builder::new()
+        .name("released-runtime-probe-stdout".to_owned())
+        .spawn(move || count_stream_bytes(stdout))?;
+    let stderr_thread = thread::Builder::new()
+        .name("released-runtime-probe-stderr".to_owned())
+        .spawn(move || count_stream_bytes(stderr))?;
+
+    let timed_out = process.wait(Duration::from_secs(15))?.is_none();
+    if timed_out {
+        process.terminate(PROBE_TIMEOUT_EXIT_CODE)?;
+    }
+    let job_empty = process.wait_for_empty(Duration::from_secs(10))?;
+    let exit_code = process.wait(Duration::from_secs(10))?;
+    drop(process);
+    let stdout_bytes = stdout_thread
+        .join()
+        .map_err(|_| gate_error("the native probe stdout counter panicked"))??;
+    let stderr_bytes = stderr_thread
+        .join()
+        .map_err(|_| gate_error("the native probe stderr counter panicked"))??;
+    let exit_code =
+        exit_code.ok_or_else(|| gate_error("the native probe exit code was unavailable"))?;
+
+    ensure(!timed_out, "the native interpreter probe timed out")?;
+    ensure(
+        job_empty,
+        "the native interpreter probe retained an active Job process",
+    )?;
+    ensure(
+        exit_code == 0,
+        format!(
+            "the native interpreter/package probe failed: exit_code={exit_code}, \
+             stdout_bytes={stdout_bytes}, stderr_bytes={stderr_bytes}"
+        ),
+    )?;
+    Ok(NativeProbeReport {
+        exit_code,
+        stdout_bytes,
+        stderr_bytes,
+        job_empty,
+    })
+}
+
+fn count_stream_bytes(mut stream: impl Read) -> io::Result<u64> {
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(count) => {
+                let count = u64::try_from(count).map_err(io::Error::other)?;
+                total = total.saturating_add(count);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn normal_limits() -> LifecycleLimits {

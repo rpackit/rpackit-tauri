@@ -62,6 +62,9 @@ fn run() -> Result<(), String> {
         emit_error("runtime")?;
         return Err("requested launcher failure".to_owned());
     }
+    if mode == "exit-before-protocol" {
+        return Err("requested pre-protocol exit".to_owned());
+    }
 
     let pid = std::process::id();
     emit_starting(pid, port)?;

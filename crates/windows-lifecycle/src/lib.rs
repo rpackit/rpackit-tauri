@@ -315,6 +315,7 @@ impl RuntimeOwner {
 
         if let Err(primary) = owner.wait_until_ready() {
             let cleanup = owner.abort_and_cleanup();
+            let primary = attach_startup_stderr_count(primary, owner.discarded_stderr_bytes);
             return Err(combine_cleanup_error(primary, cleanup.err()));
         }
         Ok(owner)
@@ -479,6 +480,16 @@ impl RuntimeOwner {
             }
             let timeout = self.remaining_poll(startup_deadline);
             match self.monitor.recv_timeout(timeout) {
+                Ok(message @ MonitorMessage::StdoutEnded { .. }) => {
+                    self.apply_monitor(message, false)?;
+                    if let Some(exit_code) = self.process_ref()?.wait(self.limits.poll_interval)? {
+                        return Err(LifecycleError::InterpreterExitedBeforeReadiness {
+                            exit_code,
+                            discarded_stderr_bytes: 0,
+                        });
+                    }
+                    return Err(LifecycleError::ProtocolStreamEnded);
+                }
                 Ok(message) => {
                     let event = self.apply_monitor(message, true)?;
                     match event {
@@ -571,8 +582,11 @@ impl RuntimeOwner {
     }
 
     fn ensure_wrapper_alive_before_ready(&self) -> Result<(), LifecycleError> {
-        if self.process_ref()?.wait(Duration::ZERO)?.is_some() {
-            return Err(LifecycleError::WrapperExitedBeforeReadiness);
+        if let Some(exit_code) = self.process_ref()?.wait(Duration::ZERO)? {
+            return Err(LifecycleError::InterpreterExitedBeforeReadiness {
+                exit_code,
+                discarded_stderr_bytes: 0,
+            });
         }
         Ok(())
     }
@@ -1119,6 +1133,18 @@ fn cleanup_prelaunch_error(primary: LifecycleError, session: &PrivateSession) ->
     }
 }
 
+fn attach_startup_stderr_count(error: LifecycleError, bytes: u64) -> LifecycleError {
+    match error {
+        LifecycleError::InterpreterExitedBeforeReadiness { exit_code, .. } => {
+            LifecycleError::InterpreterExitedBeforeReadiness {
+                exit_code,
+                discarded_stderr_bytes: bytes,
+            }
+        }
+        other => other,
+    }
+}
+
 fn cleanup_spawned_error(
     primary: LifecycleError,
     process: JobProcess,
@@ -1280,9 +1306,20 @@ pub enum LifecycleError {
     /// The launcher reported a stable failure phase; its message was discarded.
     #[error("the launcher reported a {0:?} failure")]
     LauncherReportedFailure(ErrorPhase),
-    /// The wrapper exited before authenticated readiness.
-    #[error("the R wrapper exited before authenticated readiness")]
-    WrapperExitedBeforeReadiness,
+    /// The direct bundled interpreter exited before authenticated readiness.
+    ///
+    /// Only the numeric exit status and discarded stderr byte count are
+    /// retained; stderr text is never kept.
+    #[error(
+        "the bundled R interpreter exited before authenticated readiness \
+         (exit code {exit_code}, discarded stderr bytes {discarded_stderr_bytes})"
+    )]
+    InterpreterExitedBeforeReadiness {
+        /// Numeric process status returned by Windows.
+        exit_code: u32,
+        /// Number of stderr bytes discarded without retaining text.
+        discarded_stderr_bytes: u64,
+    },
     /// The captured runtime exited before authenticated readiness.
     #[error("the R runtime exited before authenticated readiness")]
     RuntimeExitedBeforeReadiness,

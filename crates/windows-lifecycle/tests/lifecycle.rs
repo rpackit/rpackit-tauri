@@ -258,6 +258,26 @@ fn malformed_protocol_kills_job_and_removes_session() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn startup_exit_reports_only_code_and_stderr_count() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = FixtureBundle::new("exit-before-protocol")?;
+    let secrets = TransportSecrets::generate()?;
+
+    let error = require_launch_error(
+        fixture.launch(&secrets, test_limits()),
+        "pre-protocol exit unexpectedly launched",
+    )?;
+    assert!(contains_error(&error, |error| matches!(
+        error,
+        LifecycleError::InterpreterExitedBeforeReadiness {
+            exit_code: 2,
+            discarded_stderr_bytes
+        } if *discarded_stderr_bytes > 0
+    )));
+    assert!(fixture.sessions_are_empty()?);
+    Ok(())
+}
+
+#[test]
 fn occupied_port_fails_closed_without_touching_contender() -> Result<(), Box<dyn std::error::Error>>
 {
     let fixture = FixtureBundle::new("normal")?;

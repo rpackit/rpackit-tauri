@@ -57,6 +57,9 @@ All notable changes to this pre-release repository are documented here.
   the top-level Windows command-shell wrapper, requires the architecture
   interpreter before process creation, and proves the launched and
   protocol-reported runtime identities are equal.
+- Pre-readiness interpreter exits now report only the numeric exit code and
+  discarded stderr byte count, preserving diagnostics without retaining
+  potentially sensitive stderr text.
 - Added an executable synthetic-R lifecycle matrix covering graceful and
   forced close, owner drop, malformed protocol, readiness timeout, occupied
   port, post-readiness exit, environment isolation, and preserved audit-entry
