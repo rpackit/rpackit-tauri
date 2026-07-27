@@ -738,7 +738,10 @@ mod tests {
             .http_only(true)
             .same_site(SameSite::Strict)
             .build();
-        assert!(session_cookie_is_exact(&[cookie.clone()], &session));
+        assert!(session_cookie_is_exact(
+            std::slice::from_ref(&cookie),
+            &session
+        ));
 
         let wrong_path = Cookie::build((SESSION_COOKIE_NAME, cookie.value().to_owned()))
             .path("/nested")
