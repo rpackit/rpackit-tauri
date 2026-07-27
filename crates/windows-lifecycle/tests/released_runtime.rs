@@ -7,7 +7,7 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -152,6 +152,7 @@ fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()>
     let authenticated = http_get(
         graceful_owner.upstream_port(),
         Some(first_credential.as_str()),
+        "authenticated",
     )?;
     ensure(
         authenticated.status == 200,
@@ -162,11 +163,17 @@ fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()>
         "authenticated response did not contain the hello-shiny page marker",
     )?;
     ensure(
-        http_get(graceful_owner.upstream_port(), None)?.status == 403,
+        http_get(graceful_owner.upstream_port(), None, "missing-credential")?.status == 403,
         "missing Shiny credential was not denied",
     )?;
     ensure(
-        http_get(graceful_owner.upstream_port(), Some(WRONG_CREDENTIAL))?.status == 403,
+        http_get(
+            graceful_owner.upstream_port(),
+            Some(WRONG_CREDENTIAL),
+            "wrong-credential",
+        )?
+        .status
+            == 403,
         "wrong Shiny credential was not denied",
     )?;
     graceful_owner.poll_health()?;
@@ -491,7 +498,11 @@ fn timeout_limits() -> LifecycleLimits {
     }
 }
 
-fn http_get(port: u16, credential: Option<&str>) -> GateResult<HttpResponse> {
+fn http_get(
+    port: u16,
+    credential: Option<&str>,
+    observation: &'static str,
+) -> GateResult<HttpResponse> {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
     let timeout = Duration::from_secs(5);
     let mut stream = TcpStream::connect_timeout(&address.into(), timeout)?;
@@ -506,7 +517,6 @@ fn http_get(port: u16, credential: Option<&str>) -> GateResult<HttpResponse> {
     request.extend_from_slice(b"Connection: close\r\n\r\n");
     stream.write_all(&request)?;
     stream.flush()?;
-    stream.shutdown(Shutdown::Write)?;
 
     let mut bytes = Vec::new();
     stream
@@ -514,17 +524,21 @@ fn http_get(port: u16, credential: Option<&str>) -> GateResult<HttpResponse> {
         .read_to_end(&mut bytes)?;
     ensure(
         u64::try_from(bytes.len())? <= MAX_HTTP_RESPONSE_BYTES,
-        "HTTP response exceeded the acceptance-test limit",
+        format!("{observation} HTTP response exceeded the acceptance-test limit"),
     )?;
     let status_line_end = bytes
         .windows(2)
         .position(|window| window == b"\r\n")
-        .ok_or_else(|| gate_error("HTTP response omitted its status line"))?;
+        .ok_or_else(|| {
+            gate_error(format!(
+                "{observation} HTTP response omitted its status line"
+            ))
+        })?;
     let status_line = std::str::from_utf8(&bytes[..status_line_end])?;
     let status = status_line
         .split_ascii_whitespace()
         .nth(1)
-        .ok_or_else(|| gate_error("HTTP status code was missing"))?
+        .ok_or_else(|| gate_error(format!("{observation} HTTP status code was missing")))?
         .parse::<u16>()?;
     Ok(HttpResponse { status, bytes })
 }
