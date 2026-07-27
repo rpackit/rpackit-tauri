@@ -13,13 +13,16 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rpackit_transport::TransportSecrets;
+use rpackit_transport::{
+    BOOTSTRAP_HEADER_NAME, ProxyAddress, SESSION_COOKIE_NAME, TransportLimits, TransportSecrets,
+};
 use rpackit_windows_launcher::{LaunchCommand, LaunchEnvironment, launch};
 use rpackit_windows_lifecycle::{
-    LifecycleError, LifecycleLimits, RuntimeOwner, ShutdownKind, ShutdownReport,
+    LifecycleError, LifecycleLimits, NativeAppOwner, RuntimeOwner, ShutdownKind, ShutdownReport,
     select_upstream_port,
 };
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 
 const MAX_HTTP_RESPONSE_BYTES: u64 = 1024 * 1024;
@@ -107,7 +110,7 @@ impl GateConfig {
 
 struct HttpResponse {
     status: u16,
-    bytes: Vec<u8>,
+    bytes: Zeroizing<Vec<u8>>,
 }
 
 struct NativeProbeReport {
@@ -117,10 +120,10 @@ struct NativeProbeReport {
     job_empty: bool,
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "downloads and prepares released portable R only in GitHub Actions"]
 #[allow(clippy::too_many_lines)]
-fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()> {
+async fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()> {
     let config = GateConfig::from_environment()?;
     let mut scenarios = Map::new();
 
@@ -142,6 +145,117 @@ fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()>
             "job_empty": native_probe.job_empty
         }),
     );
+
+    let mut native_app = NativeAppOwner::launch(
+        &config.bundle,
+        &config.sessions,
+        normal_limits(),
+        TransportLimits::default(),
+    )
+    .await?;
+    let browser = native_app.browser_launch()?;
+    let proxy_address = browser.address().clone();
+    let bootstrap = Zeroizing::new(browser.bootstrap_secret().with_exposed(str::to_owned));
+    let session = Zeroizing::new(browser.session_secret().with_exposed(str::to_owned));
+    ensure(
+        !format!("{native_app:?}").contains(bootstrap.as_str())
+            && !format!("{native_app:?}").contains(session.as_str()),
+        "native application Debug output exposed a browser credential",
+    )?;
+    let bootstrap_response = proxy_get(
+        &proxy_address,
+        "/__rpackit_bootstrap",
+        Some(bootstrap.as_str()),
+        None,
+        "real-runtime-bootstrap",
+    )
+    .await?;
+    ensure(
+        bootstrap_response.status == 200,
+        "real-runtime proxy bootstrap did not return HTTP 200",
+    )?;
+    let expected_cookie = Zeroizing::new(format!(
+        "{SESSION_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict",
+        session.as_str()
+    ));
+    ensure(
+        contains_bytes(&bootstrap_response.bytes, expected_cookie.as_bytes()),
+        "real-runtime proxy bootstrap omitted the host session cookie",
+    )?;
+    ensure(
+        proxy_get(
+            &proxy_address,
+            "/__rpackit_bootstrap",
+            Some(bootstrap.as_str()),
+            None,
+            "real-runtime-bootstrap-replay",
+        )
+        .await?
+        .status
+            == 401,
+        "real-runtime proxy accepted a replayed bootstrap credential",
+    )?;
+    let proxied_page = proxy_get(
+        &proxy_address,
+        "/",
+        None,
+        Some(session.as_str()),
+        "real-runtime-authenticated-proxy",
+    )
+    .await?;
+    ensure(
+        proxied_page.status == 200 && contains_bytes(&proxied_page.bytes, EXPECTED_PAGE_MARKER),
+        "authenticated real-runtime proxy request did not load hello-shiny",
+    )?;
+    ensure(
+        proxy_get(
+            &proxy_address,
+            "/",
+            None,
+            None,
+            "real-runtime-missing-session",
+        )
+        .await?
+        .status
+            == 401,
+        "real-runtime proxy accepted a missing browser session credential",
+    )?;
+    ensure(
+        proxy_get(
+            &proxy_address,
+            "/",
+            None,
+            Some(WRONG_CREDENTIAL),
+            "real-runtime-wrong-session",
+        )
+        .await?
+        .status
+            == 401,
+        "real-runtime proxy accepted a wrong browser session credential",
+    )?;
+    native_app.poll_health().await?;
+    drop(browser);
+    drop(expected_cookie);
+    drop(session);
+    drop(bootstrap);
+    let native_app_report = native_app.shutdown().await?;
+    ensure(
+        native_app_report.proxy_stopped,
+        "real-runtime proxy did not stop during native application cleanup",
+    )?;
+    verify_shutdown(&native_app_report.runtime, ShutdownKind::Graceful)?;
+    scenarios.insert(
+        "authenticated_proxy_real_runtime".to_owned(),
+        json!({
+            "bootstrap_consumed_once": true,
+            "authenticated_page_loaded": true,
+            "missing_session_denied": true,
+            "wrong_session_denied": true,
+            "proxy_stopped": true,
+            "shutdown": report_evidence(&native_app_report.runtime)
+        }),
+    );
+    ensure_sessions_empty(&config.sessions)?;
 
     let (mut graceful_owner, graceful_secrets) = launch_owner(&config, normal_limits())?;
     ensure(
@@ -526,6 +640,58 @@ fn http_get(
         u64::try_from(bytes.len())? <= MAX_HTTP_RESPONSE_BYTES,
         format!("{observation} HTTP response exceeded the acceptance-test limit"),
     )?;
+    parse_http_response(bytes, observation)
+}
+
+async fn proxy_get(
+    address: &ProxyAddress,
+    path: &'static str,
+    bootstrap: Option<&str>,
+    session: Option<&str>,
+    observation: &'static str,
+) -> GateResult<HttpResponse> {
+    let io_timeout = Duration::from_secs(5);
+    let socket = SocketAddrV4::new(Ipv4Addr::LOCALHOST, address.port());
+    let mut stream = tokio::time::timeout(io_timeout, tokio::net::TcpStream::connect(socket))
+        .await
+        .map_err(|_| gate_error(format!("{observation} proxy connection timed out")))??;
+    let mut request = Zeroizing::new(Vec::with_capacity(384));
+    write!(
+        request,
+        "GET {path} HTTP/1.1\r\nHost: {}\r\n",
+        address.authority()
+    )?;
+    if let Some(value) = bootstrap {
+        write!(request, "{BOOTSTRAP_HEADER_NAME}: {value}\r\n")?;
+    }
+    if let Some(value) = session {
+        write!(request, "Cookie: {SESSION_COOKIE_NAME}={value}\r\n")?;
+    }
+    request.extend_from_slice(b"Connection: close\r\n\r\n");
+    tokio::time::timeout(io_timeout, stream.write_all(&request))
+        .await
+        .map_err(|_| gate_error(format!("{observation} proxy request write timed out")))??;
+    tokio::time::timeout(io_timeout, stream.flush())
+        .await
+        .map_err(|_| gate_error(format!("{observation} proxy request flush timed out")))??;
+
+    let mut bytes = Vec::new();
+    tokio::time::timeout(
+        io_timeout,
+        (&mut stream)
+            .take(MAX_HTTP_RESPONSE_BYTES + 1)
+            .read_to_end(&mut bytes),
+    )
+    .await
+    .map_err(|_| gate_error(format!("{observation} proxy response read timed out")))??;
+    ensure(
+        u64::try_from(bytes.len())? <= MAX_HTTP_RESPONSE_BYTES,
+        format!("{observation} proxy response exceeded the acceptance-test limit"),
+    )?;
+    parse_http_response(bytes, observation)
+}
+
+fn parse_http_response(bytes: Vec<u8>, observation: &'static str) -> GateResult<HttpResponse> {
     let status_line_end = bytes
         .windows(2)
         .position(|window| window == b"\r\n")
@@ -540,7 +706,10 @@ fn http_get(
         .nth(1)
         .ok_or_else(|| gate_error(format!("{observation} HTTP status code was missing")))?
         .parse::<u16>()?;
-    Ok(HttpResponse { status, bytes })
+    Ok(HttpResponse {
+        status,
+        bytes: Zeroizing::new(bytes),
+    })
 }
 
 fn terminate_exact_process(pid: u32) -> GateResult<()> {
