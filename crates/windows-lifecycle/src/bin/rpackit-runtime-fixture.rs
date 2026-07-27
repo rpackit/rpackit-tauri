@@ -137,7 +137,10 @@ fn required_text<'a>(
 
 fn verify_environment() -> Result<(), String> {
     let executable = env::current_exe().map_err(|_| "current exe unavailable".to_owned())?;
-    let bin = executable
+    let architecture_bin = executable
+        .parent()
+        .ok_or_else(|| "architecture runtime bin unavailable".to_owned())?;
+    let bin = architecture_bin
         .parent()
         .ok_or_else(|| "runtime bin unavailable".to_owned())?;
     let home = bin
@@ -161,11 +164,15 @@ fn verify_environment() -> Result<(), String> {
         return Err("legacy environment token was present".to_owned());
     }
     let path = env::var_os("PATH").ok_or_else(|| "PATH was absent".to_owned())?;
-    let Some(first) = env::split_paths(&path).next() else {
+    let mut paths = env::split_paths(&path);
+    let Some(first) = paths.next() else {
         return Err("PATH was empty".to_owned());
     };
-    if first != bin {
-        return Err("bundled R bin was not first on PATH".to_owned());
+    let Some(second) = paths.next() else {
+        return Err("PATH omitted the bundled R bin".to_owned());
+    };
+    if first != architecture_bin || second != bin {
+        return Err("bundled architecture and R bins were not first on PATH".to_owned());
     }
     Ok(())
 }

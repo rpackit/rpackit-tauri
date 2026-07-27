@@ -53,6 +53,10 @@ All notable changes to this pre-release repository are documented here.
   authenticated readiness, graceful control-file shutdown, forced Job
   fallback, zero-active-process accounting, and retryable non-recursive
   cleanup.
+- The lifecycle owner now starts `R/bin/x64/Rscript.exe` directly instead of
+  the top-level Windows command-shell wrapper, requires the architecture
+  interpreter before process creation, and proves the launched and
+  protocol-reported runtime identities are equal.
 - Added an executable synthetic-R lifecycle matrix covering graceful and
   forced close, owner drop, malformed protocol, readiness timeout, occupied
   port, post-readiness exit, environment isolation, and preserved audit-entry

@@ -13,7 +13,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -209,12 +209,17 @@ impl RuntimeOwner {
             return Err(cleanup_prelaunch_error(error.into(), &session));
         }
 
-        let environment = match bundled_r_environment(&bundle) {
+        let interpreter = match bundled_r_interpreter(&bundle) {
+            Ok(interpreter) => interpreter,
+            Err(error) => return Err(cleanup_prelaunch_error(error, &session)),
+        };
+        let environment = match bundled_r_environment(&bundle, &interpreter) {
             Ok(environment) => environment,
             Err(error) => return Err(cleanup_prelaunch_error(error, &session)),
         };
         let command = bundled_r_command(
             &bundle,
+            &interpreter,
             upstream_port,
             session.token_path(),
             session.control_path(),
@@ -331,6 +336,13 @@ impl RuntimeOwner {
     #[must_use]
     pub fn runtime_identity(&self) -> Option<ProcessIdentity> {
         self.runtime.as_ref().map(JobMemberProcess::identity)
+    }
+
+    /// Returns the exact identity created for the architecture-specific
+    /// bundled R interpreter.
+    #[must_use]
+    pub fn launch_identity(&self) -> Option<ProcessIdentity> {
+        self.process.as_ref().map(JobProcess::identity)
     }
 
     /// Returns the private session directory retained for retryable cleanup.
@@ -886,7 +898,25 @@ pub fn select_upstream_port() -> Result<u16, LifecycleError> {
     Ok(port)
 }
 
-fn bundled_r_environment(bundle: &ValidatedBundle) -> Result<LaunchEnvironment, LifecycleError> {
+fn bundled_r_interpreter(bundle: &ValidatedBundle) -> Result<PathBuf, LifecycleError> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err(LifecycleError::UnsupportedWindowsArchitecture);
+    }
+    let rscript_directory = bundle
+        .rscript()
+        .parent()
+        .ok_or(LifecycleError::InvalidRuntimeTopology)?;
+    let interpreter = rscript_directory.join("x64").join("Rscript.exe");
+    if !interpreter.is_file() {
+        return Err(LifecycleError::ArchitectureRscriptUnavailable);
+    }
+    Ok(interpreter)
+}
+
+fn bundled_r_environment(
+    bundle: &ValidatedBundle,
+    interpreter: &Path,
+) -> Result<LaunchEnvironment, LifecycleError> {
     let mut environment = LaunchEnvironment::from_current()?;
     for name in AMBIENT_R_VARIABLES {
         let _ = environment.remove(name)?;
@@ -905,7 +935,12 @@ fn bundled_r_environment(bundle: &ValidatedBundle) -> Result<LaunchEnvironment, 
     environment.set("R_LIBS_USER", bundle.library().as_os_str())?;
     environment.set("RPACKIT_LAUNCH_PROTOCOL", "2")?;
 
-    let mut path = OsString::from(rscript_directory.as_os_str());
+    let interpreter_directory = interpreter
+        .parent()
+        .ok_or(LifecycleError::InvalidRuntimeTopology)?;
+    let mut path = OsString::from(interpreter_directory.as_os_str());
+    path.push(OsStr::new(";"));
+    path.push(rscript_directory.as_os_str());
     if let Some(ambient_path) = std::env::var_os("PATH")
         && !ambient_path.is_empty()
     {
@@ -918,12 +953,13 @@ fn bundled_r_environment(bundle: &ValidatedBundle) -> Result<LaunchEnvironment, 
 
 fn bundled_r_command(
     bundle: &ValidatedBundle,
+    interpreter: &Path,
     port: u16,
     token_path: &Path,
     control_path: &Path,
     environment: LaunchEnvironment,
 ) -> LaunchCommand {
-    LaunchCommand::new(bundle.rscript(), bundle.resources())
+    LaunchCommand::new(interpreter, bundle.resources())
         .args([
             OsString::from("--vanilla"),
             bundle.launcher().as_os_str().to_owned(),
@@ -1202,6 +1238,12 @@ pub enum LifecycleError {
     /// The validated Rscript path did not have the required `R/bin` topology.
     #[error("the validated bundled runtime topology was invalid")]
     InvalidRuntimeTopology,
+    /// This release line currently supports only x86-64 Windows portable R.
+    #[error("the current Windows architecture is not supported")]
+    UnsupportedWindowsArchitecture,
+    /// The validated runtime omitted the direct x64 Rscript interpreter.
+    #[error("the bundled x64 Rscript interpreter was unavailable")]
+    ArchitectureRscriptUnavailable,
     /// A validated bundle operation failed before process creation.
     #[error(transparent)]
     Bundle(#[from] BundleError),

@@ -35,6 +35,7 @@ struct FixtureBundle {
     _temporary: TempDir,
     bundle: PathBuf,
     sessions: PathBuf,
+    interpreter: PathBuf,
 }
 
 impl FixtureBundle {
@@ -43,14 +44,21 @@ impl FixtureBundle {
         let bundle = temporary.path().join("bundle with spaces");
         let resources = bundle.join("resources");
         let rscript = resources.join("R/bin/Rscript.exe");
+        let interpreter = resources.join("R/bin/x64/Rscript.exe");
         let library = resources.join("R/library");
         let app = resources.join("app");
         let sessions = temporary.path().join("private sessions");
         fs::create_dir_all(rscript.parent().ok_or("Rscript parent missing")?)?;
+        fs::create_dir_all(
+            interpreter
+                .parent()
+                .ok_or("architecture Rscript parent missing")?,
+        )?;
         fs::create_dir_all(&library)?;
         fs::create_dir_all(&app)?;
         fs::create_dir(&sessions)?;
         fs::copy(FIXTURE, &rscript)?;
+        fs::copy(FIXTURE, &interpreter)?;
         fs::write(app.join("app.R"), b"synthetic app\n")?;
         fs::write(app.join("fixture-mode"), mode)?;
         fs::write(resources.join("launcher.R"), VALID_LAUNCHER)?;
@@ -70,6 +78,7 @@ impl FixtureBundle {
             _temporary: temporary,
             bundle,
             sessions,
+            interpreter,
         })
     }
 
@@ -107,6 +116,7 @@ fn authenticated_runtime_starts_and_cleans_gracefully() -> Result<(), Box<dyn st
         owner.runtime_identity().ok_or("runtime unavailable")?.pid,
         0
     );
+    assert_eq!(owner.launch_identity(), owner.runtime_identity());
     assert!(
         owner
             .bundle()
@@ -123,6 +133,25 @@ fn authenticated_runtime_starts_and_cleans_gracefully() -> Result<(), Box<dyn st
     assert!(report.job_empty);
     assert!(report.session_removed);
     assert!(!session.exists());
+    assert!(fixture.sessions_are_empty()?);
+    Ok(())
+}
+
+#[test]
+fn missing_architecture_interpreter_fails_before_launch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = FixtureBundle::new("normal")?;
+    fs::remove_file(&fixture.interpreter)?;
+    let secrets = TransportSecrets::generate()?;
+
+    let error = require_launch_error(
+        fixture.launch(&secrets, test_limits()),
+        "missing architecture interpreter unexpectedly launched",
+    )?;
+    assert!(contains_error(&error, |error| matches!(
+        error,
+        LifecycleError::ArchitectureRscriptUnavailable
+    )));
     assert!(fixture.sessions_are_empty()?);
     Ok(())
 }

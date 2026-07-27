@@ -145,16 +145,19 @@ and stable runtime PID.
 
 `crates/windows-lifecycle` now composes these boundaries for an executable
 synthetic runtime. Its startup order is bundle validation, private session,
-`S` token write, explicit sanitized environment construction, suspended Job
-launch, token-consumption proof, protocol `listening`, exact runtime/listener
-capture, and direct authenticated HTTP readiness. Stderr is counted and
-discarded without retaining text. The ready owner polls both exact process
-handles. Shutdown creates the protected control file, accepts only the
-validated stopping/stopped sequence during the grace bound, and otherwise
-terminates the Job. It requires zero active Job members before cleaning the
-known files, preserves unexpected entries, and retains the exact session for
-an explicit cleanup retry. Dropping an unclean owner invokes the same forced
-Job path best-effort.
+`S` token write, direct `R/bin/x64/Rscript.exe` selection, explicit sanitized
+environment construction, suspended Job launch, token-consumption proof,
+protocol `listening`, exact runtime/listener capture, and direct authenticated
+HTTP readiness. Launching the architecture interpreter avoids the top-level
+Windows R command-shell wrapper, so the created Job process and
+protocol-reported runtime must have the same create-time-aware identity. Stderr
+is counted and discarded without retaining text. The ready owner polls both
+exact process handles. Shutdown creates the protected control file, accepts
+only the validated stopping/stopped sequence during the grace bound, and
+otherwise terminates the Job. It requires zero active Job members before
+cleaning the known files, preserves unexpected entries, and retains the exact
+session for an explicit cleanup retry. Dropping an unclean owner invokes the
+same forced Job path best-effort.
 
 The synthetic fixture exercises these native boundaries without bundling R.
 It therefore proves orchestration behavior but does not yet prove

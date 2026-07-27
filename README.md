@@ -250,11 +250,12 @@ collapsed.
 `crates/windows-lifecycle` now composes those foundations into one Windows
 runtime owner. It validates the bundle before creating a session, removes
 ambient R/rpackit variables, pins `R_HOME`, every R library variable, protocol
-2, and the bundled `R/bin` path, writes `S` only to the protected token file,
-and launches exactly:
+2, and the bundled `R/bin/x64` plus `R/bin` paths, writes `S` only to the
+protected token file, bypasses the top-level Windows `Rscript.exe` command-shell
+wrapper, and launches the actual x64 interpreter exactly:
 
 ```text
-Rscript.exe --vanilla launcher.R --app <path> --port <port>
+R/bin/x64/Rscript.exe --vanilla launcher.R --app <path> --port <port>
   --token-file <private-path> --control <private-path>
 ```
 
@@ -285,7 +286,8 @@ then proves the real page loads only with `S`, missing and wrong credentials
 receive `403`, graceful and forced Job shutdown leave zero members, owner drop
 removes the process tree and private session, an exact runtime crash is
 detected, a one-millisecond startup deadline fails closed, an occupied port
-does not disturb its contender, and an ambient hostile R profile does not run.
+does not disturb its contender, the directly launched interpreter is the
+protocol-reported runtime, and an ambient hostile R profile does not run.
 Only two bounded, path-free, secret-free JSON files are retained for seven
 days. The downloaded archive, extracted runtime, copied bundle, package
 libraries, Cargo target, profiles, and sessions are deleted together before

@@ -71,12 +71,14 @@ an unexpected entry. This component evidence does not cover released portable
 R and `hello-shiny`.
 
 The Windows lifecycle owner now connects the same layers to an executable
-synthetic runtime: it verifies actual token deletion, strict events, exact
-runtime/listener ownership, authenticated direct readiness, both process
-handles, graceful control signaling, forced Job fallback, zero active members,
-and retryable non-recursive cleanup. Stderr text and non-protocol stdout are
-never retained. This fixture is deliberately not evidence about real R,
-generated launcher behavior, Shiny, or the proxy/WebView shutdown sequence.
+synthetic runtime: it requires the direct architecture-specific Rscript,
+bypasses the top-level command-shell wrapper, verifies actual token deletion,
+strict events, exact runtime/listener ownership, authenticated direct
+readiness, both process handles, graceful control signaling, forced Job
+fallback, zero active members, and retryable non-recursive cleanup. Stderr text
+and non-protocol stdout are never retained. This fixture is deliberately not
+evidence about real R, generated launcher behavior, Shiny, or the proxy/WebView
+shutdown sequence.
 
 The real-R acceptance target is separate and remote-only. GitHub Actions pins
 the rpackit and `hello-shiny` commits, verifies the existing portable-R

@@ -99,6 +99,10 @@ fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()>
     let mut scenarios = Map::new();
 
     let (mut graceful_owner, graceful_secrets) = launch_owner(&config, normal_limits())?;
+    ensure(
+        graceful_owner.launch_identity() == graceful_owner.runtime_identity(),
+        "the architecture-specific interpreter was not the owned runtime",
+    )?;
     let first_credential = Zeroizing::new(graceful_secrets.upstream().with_exposed(str::to_owned));
     let authenticated = http_get(
         graceful_owner.upstream_port(),
@@ -126,6 +130,7 @@ fn released_portable_r_and_hello_shiny_pass_lifecycle_matrix() -> GateResult<()>
     scenarios.insert(
         "authenticated_graceful_lifecycle".to_owned(),
         json!({
+            "direct_architecture_interpreter_owned": true,
             "authenticated_page_loaded": true,
             "missing_credential_denied": true,
             "wrong_credential_denied": true,

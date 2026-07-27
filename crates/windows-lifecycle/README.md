@@ -11,11 +11,12 @@ Startup succeeds only after:
 2. a protected private session and one-time `S` token file are created;
 3. ambient R/rpackit environment variables are removed and the bundled
    runtime/library are selected explicitly;
-4. `Rscript.exe` is created suspended, assigned to the no-breakaway
-   kill-on-close Job, verified and resumed;
+4. the direct `R/bin/x64/Rscript.exe` interpreter is created suspended,
+   assigned to the no-breakaway kill-on-close Job, verified and resumed;
 5. the token file is gone and a valid post-bind `listening` event arrives;
-6. the reported create-time-aware process belongs to the Job and exclusively
-   owns `127.0.0.1:<port>`; and
+6. the reported create-time-aware process is the directly launched
+   interpreter, belongs to the Job, and exclusively owns
+   `127.0.0.1:<port>`; and
 7. a direct request carrying `Shiny-Shared-Secret: S` returns HTTP 2xx/3xx.
 
 Typical ownership is:
