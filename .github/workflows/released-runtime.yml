@@ -33,12 +33,6 @@ env:
   RPACKIT_PACKAGE_SHA: "990cbbc59b6ea7f8b90e422a4e0060dc56cffd2b"
   RPACKIT_EXAMPLES_SHA: "385807ab418ece8875deb321db4878594882868e"
   RPACKIT_CRAN_REPOSITORY: "https://cloud.r-project.org"
-  RPACKIT_GATE_WORK_ROOT: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}"
-  RPACKIT_RELEASE_BUNDLE: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\hello-shiny bundle"
-  RPACKIT_RELEASE_SESSIONS: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\private sessions"
-  RPACKIT_RELEASE_EVIDENCE: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\evidence\\lifecycle-evidence.json"
-  RPACKIT_PROFILE_MARKER: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\ambient-profile-executed"
-  CARGO_TARGET_DIR: "${{ runner.temp }}\\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\\cargo target"
 
 jobs:
   released-runtime:
@@ -70,6 +64,21 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      - name: Configure runner-scoped storage
+        shell: powershell
+        run: |
+          $workRoot = Join-Path $env:RUNNER_TEMP (
+            "rpackit released runtime $env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          )
+          @(
+            "RPACKIT_GATE_WORK_ROOT=$workRoot",
+            "RPACKIT_RELEASE_BUNDLE=$(Join-Path $workRoot 'hello-shiny bundle')",
+            "RPACKIT_RELEASE_SESSIONS=$(Join-Path $workRoot 'private sessions')",
+            "RPACKIT_RELEASE_EVIDENCE=$(Join-Path $workRoot 'evidence\lifecycle-evidence.json')",
+            "RPACKIT_PROFILE_MARKER=$(Join-Path $workRoot 'ambient-profile-executed')",
+            "CARGO_TARGET_DIR=$(Join-Path $workRoot 'cargo target')"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Prepare verified released runtime and hello-shiny bundle
         shell: powershell
         run: |
@@ -80,11 +89,12 @@ jobs:
 
       - name: Run the released-runtime lifecycle matrix
         shell: powershell
-        env:
-          R_PROFILE_USER: "${{ env.RPACKIT_GATE_WORK_ROOT }}\\hostile ambient profile.R"
-          R_ENVIRON_USER: "${{ env.RPACKIT_GATE_WORK_ROOT }}\\hostile ambient Renviron"
-          RPACKIT_SESSION_TOKEN: "ambient-legacy-token-must-not-survive"
         run: |
+          $env:R_PROFILE_USER = Join-Path $env:RPACKIT_GATE_WORK_ROOT `
+            "hostile ambient profile.R"
+          $env:R_ENVIRON_USER = Join-Path $env:RPACKIT_GATE_WORK_ROOT `
+            "hostile ambient Renviron"
+          $env:RPACKIT_SESSION_TOKEN = "ambient-legacy-token-must-not-survive"
           cargo test `
             -p rpackit-windows-lifecycle `
             --test released_runtime `
@@ -135,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: released-portable-r-hello-shiny-evidence
-          path: ${{ env.RPACKIT_GATE_WORK_ROOT }}\evidence\*.json
+          path: ${{ runner.temp }}\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\evidence\*.json
           if-no-files-found: warn
           retention-days: 7
 
