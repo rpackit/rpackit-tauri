@@ -164,6 +164,18 @@ stable-host fallback.
 
 ## Phase 2 process-owner foundation
 
+`crates/resource-bundle` now performs the required non-executing startup
+validation before any R process is created. It bounds and strictly deserializes
+`resources/rpackit.json`, rejects unknown fields and every schema/protocol
+downgrade, accepts only the authenticated protocol-2 Windows topology, and
+requires installed dependency evidence. Every critical manifest path is
+resolved below the canonical resource root with links and Windows reparse
+points rejected. The validator also matches the declared Shiny layout, checks
+every package directory and `DESCRIPTION`, and bounds the generated launcher
+before requiring its current token-consumption, loopback, authentication,
+listening-event, and secret-transport markers. It never executes R,
+`launcher.R`, or application code.
+
 `crates/windows-launcher` now owns the small audited unsafe boundary needed to
 start a bundled Windows process tree. It:
 
@@ -209,6 +221,12 @@ row to the captured identity. Private-session tests cover paths with spaces,
 exact token contents, DACL readback, absent-then-atomic control creation,
 duplicate rejection, invalid input without residue, launcher-style token
 deletion, and preservation of an unexpected audit entry during cleanup.
+Cross-platform resource-bundle tests separately cover strict valid loading,
+unknown fields and contract downgrades, unsafe paths, local and HTTPS
+provenance, incomplete dependencies, missing installed-package evidence,
+launcher tampering, application-layout disagreement, size limits, and
+symlinked critical resources on platforms that support deterministic symlink
+creation.
 
 `crates/launcher-protocol` provides the safe protocol-2 boundary shared by
 later lifecycle owners. Its streaming decoder bounds every stdout line,
@@ -221,8 +239,8 @@ positive runtime PID, selected port, and exact graceful-stop policy; `error`
 is terminal. Error display text is length-bounded and control characters are
 collapsed.
 
-This is deliberately not a full Phase 2 claim. Bundle/manifest validation,
-generation of `S`, real-launcher consumption and deletion of its protected
+This is deliberately not a full Phase 2 claim. Generating the complete native
+launch state, proving real-launcher consumption and deletion of its protected
 token file, wiring the decoder and reported PID capture to the real R
 lifecycle pipes, listener ownership verification to the real R process,
 authenticated readiness, graceful control-file shutdown, and integration with
@@ -446,10 +464,10 @@ Version Runtime `149.0.4022.98` both passed the complete matrix in Debug and
 Release. The fixed reports have `development_gates_passed: true`,
 `phase1_release_ready: true`, and an empty `unproven_release_gates` object.
 
-Phase 2 now has verified Windows Job/process creation, exact runtime
-PID/listener capture, strict protocol-2 decoding, and atomically restricted
-token/control-file foundations. Real R readiness and the complete shutdown
-lifecycle remain in progress; resource generation and installers are later
-milestones. See
+Phase 2 now has strict schema-1 resource validation, verified Windows
+Job/process creation, exact runtime PID/listener capture, strict protocol-2
+decoding, and atomically restricted token/control-file foundations. Real R
+readiness and the complete shutdown lifecycle remain in progress; resource
+generation and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

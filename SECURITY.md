@@ -40,11 +40,16 @@ The fixed reports contain no unproven release gate and record
 `phase1_release_ready: true`. This assurance does not cover the Phase 2 R
 launcher lifecycle, a generated application, an installer, or code signing.
 Exact-address listener takeover is rejected. The initial Phase 2 native
-process-owner layer is implemented and tested separately: it creates the
-wrapper suspended, allowlists only lifecycle-pipe handles, assigns it to an
-unnamed non-inheritable kill-on-close Job with both breakaway policies
-disabled, verifies PID/creation-time identity and Job membership, and resumes
-only after those gates pass. A separate safe decoder bounds protocol-2 stdout,
+resource boundary is implemented and tested separately: bounded strict JSON
+accepts only schema 1 and the complete authenticated protocol-2 Windows
+contract; critical paths must remain below the canonical resource root and
+cannot be links or reparse points; app, runtime, installed-package, and
+launcher structure is checked without executing bundled content. The native
+process-owner layer then creates the wrapper suspended, allowlists only
+lifecycle-pipe handles, assigns it to an unnamed non-inheritable kill-on-close
+Job with both breakaway policies disabled, verifies PID/creation-time identity
+and Job membership, and resumes only after those gates pass. A separate safe
+decoder bounds protocol-2 stdout,
 rejects ambiguous or weakened event objects, and enforces a terminal lifecycle
 sequence with stable PID and port. The process layer can retain a
 non-inheritable PID-plus-creation-time handle only after confirming the live

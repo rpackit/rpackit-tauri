@@ -6,6 +6,14 @@ All notable changes to this pre-release repository are documented here.
 
 ### Phase 2 lifecycle foundation
 
+- Added a safe non-executing resource-bundle crate. It bounds strict
+  schema-1 JSON, rejects unknown fields and protocol downgrades, requires the
+  complete authenticated protocol-2 Windows contract, and verifies installed
+  dependency evidence before any R process can start.
+- Added canonical critical-path containment with link/reparse rejection,
+  fixed bundled-R/app topology checks, per-package `DESCRIPTION` evidence, and
+  bounded launcher marker validation that rejects legacy argument,
+  environment, URL-token, and wildcard-bind transports.
 - Added an isolated Windows native-launch crate that supplies an explicit
   executable path to `CreateProcessW`, quotes arguments without a shell,
   allowlists only stdin/stdout/stderr lifecycle pipes, and creates the wrapper
@@ -35,9 +43,10 @@ All notable changes to this pre-release repository are documented here.
   tracker. It rejects duplicate/unknown fields, wrong versions, weakened
   loopback or token claims, line overflow/truncation, PID/port changes,
   impossible transitions, and events after a terminal state.
-- Kept the Phase 2 boundary explicit: bundle validation, secret generation,
-  real-launcher token consumption, real-pipe orchestration and authenticated
-  readiness, graceful close, and `hello-shiny` integration remain in progress.
+- Kept the Phase 2 boundary explicit: generated native-metadata validation,
+  secret generation, real-launcher token consumption, real-pipe orchestration
+  and authenticated readiness, graceful close, and `hello-shiny` integration
+  remain in progress.
 
 ### Transport contract version 2
 

@@ -20,10 +20,38 @@ ownership and readiness.
 | `crates/transport` | Secrets, strict HTTP admission, bootstrap, authenticated reverse proxy, response normalization, WebSocket validation and tunnelling | WebView UI, application-selected upstreams, persistent credentials |
 | `crates/transport-testkit` | Loopback-only mock upstream and collectors, deterministic browser assets, listener-overlap probes, secret-free counters and reports | External network, real credentials, release claims |
 | `crates/launcher-protocol` | Bounded protocol-2 NDJSON decoding, exact event validation, noise accounting and lifecycle sequence tracking | Process creation, secret handling, readiness network requests, untrusted output retention |
+| `crates/resource-bundle` | Bounded strict schema-1 manifest loading, authenticated protocol-2 contract checks, critical-path containment, app/runtime/package topology and launcher-marker validation | Executing R or app code, downloading runtimes, package installation, process creation |
 | `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process/listener identity, private DACL token/control files, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, readiness requests, browser lifecycle |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
+
+## Resource bundle validation
+
+Native startup first passes the bundle root to the safe
+`rpackit-resource-bundle` crate. The validator reads at most 256 KiB of
+`resources/rpackit.json`, uses `deny_unknown_fields` at every object level, and
+accepts only schema `1`, `rpackit-desktop-resources`, the fixed Windows
+`R/bin/Rscript.exe` and `R/library` topology, and the complete authenticated
+launcher protocol `2` descriptor. Native launch requires package installation
+and constraint verification already recorded by `prepare_desktop()`.
+
+Manifest paths use bounded relative POSIX syntax. Each critical component is
+inspected without following links, Windows reparse points are rejected, the
+final canonical path must stay beneath the canonical `resources` directory,
+and the required file or directory type is checked. The declared Shiny layout
+must match `app.R` or `ui.R` plus `server.R`. Every unique manifest package
+must have a real library directory and `DESCRIPTION` file, including
+`jsonlite`, `later`, and `shiny`.
+
+The generated launcher is also bounded to 256 KiB and must be strict UTF-8.
+Current token-file consumption and deletion, protocol-2 event prefix,
+loopback-only host, Shiny shared-secret setup, post-bind listening callback,
+and token-enforcement markers are required; legacy argument/environment/URL
+token transports and wildcard bind markers are forbidden. This is a
+non-executing structural gate. Runtime identity and behavior are independently
+proved later through suspended Job launch, strict lifecycle events,
+owner-PID listener inspection, and authenticated readiness.
 
 ## Windows process ownership foundation
 
@@ -99,7 +127,7 @@ launcher arguments.
 The separate safe protocol crate already bounds and parses the prefixed NDJSON
 stream and validates event ordering, fixed loopback/token claims, the selected
 port, and stable runtime PID. The remaining Phase 2 layers validate
-schema-1/protocol-2 resources, generate `S`, drive that decoder from the real
+the generated native metadata, generate `S`, drive that decoder from the real
 pipe, prove the R launcher consumed and deleted the protected token file, open
 and retain the reported runtime identity through the existing capture API,
 apply the existing listener-owner verifier to the real R socket, authenticate
@@ -558,10 +586,10 @@ exact-address takeover, IPv4/IPv6 wildcard overlap, strict malformed upstream
 response-head rejection, streamed response-body/trailer fail-closed behavior,
 WebSocket activity-idle shutdown, and independent bidirectional WebSocket
 byte-rate backpressure are tested on both runtime modes. The Phase 2 Windows
-Job/process-creation, exact process/listener identity, protocol decoder, and
-private DACL file foundations have their own passing native tests; real
-protocol-2 R readiness, graceful close, and post-Job credential/profile
-cleanup are not yet complete.
+resource validator, Job/process-creation, exact process/listener identity,
+protocol decoder, and private DACL file foundations have their own passing
+tests; real protocol-2 R readiness, graceful close, and post-Job
+credential/profile cleanup are not yet complete.
 
 ## Maintainer rules
 
