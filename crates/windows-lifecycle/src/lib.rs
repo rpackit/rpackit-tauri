@@ -11,9 +11,10 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::{
     Arc,
     mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -209,7 +210,9 @@ impl RuntimeOwner {
             return Err(cleanup_prelaunch_error(error.into(), &session));
         }
 
-        let interpreter = match bundled_r_interpreter(&bundle) {
+        let interpreter = match bundled_r_interpreter(&bundle)
+            .and_then(|path| r_compatible_existing_path(&path))
+        {
             Ok(interpreter) => interpreter,
             Err(error) => return Err(cleanup_prelaunch_error(error, &session)),
         };
@@ -217,14 +220,17 @@ impl RuntimeOwner {
             Ok(environment) => environment,
             Err(error) => return Err(cleanup_prelaunch_error(error, &session)),
         };
-        let command = bundled_r_command(
+        let command = match bundled_r_command(
             &bundle,
             &interpreter,
             upstream_port,
             session.token_path(),
             session.control_path(),
             environment,
-        );
+        ) {
+            Ok(command) => command,
+            Err(error) => return Err(cleanup_prelaunch_error(error, &session)),
+        };
         let mut process = match launch(&command) {
             Ok(process) => process,
             Err(error) => return Err(cleanup_prelaunch_error(error.into(), &session)),
@@ -943,15 +949,18 @@ fn bundled_r_environment(
     let runtime_home = rscript_directory
         .parent()
         .ok_or(LifecycleError::InvalidRuntimeTopology)?;
+    let runtime_home = r_compatible_existing_path(runtime_home)?;
+    let library = r_compatible_existing_path(bundle.library())?;
     environment.set("R_HOME", runtime_home.as_os_str())?;
-    environment.set("R_LIBS", bundle.library().as_os_str())?;
-    environment.set("R_LIBS_SITE", bundle.library().as_os_str())?;
-    environment.set("R_LIBS_USER", bundle.library().as_os_str())?;
+    environment.set("R_LIBS", library.as_os_str())?;
+    environment.set("R_LIBS_SITE", library.as_os_str())?;
+    environment.set("R_LIBS_USER", library.as_os_str())?;
     environment.set("RPACKIT_LAUNCH_PROTOCOL", "2")?;
 
     let interpreter_directory = interpreter
         .parent()
         .ok_or(LifecycleError::InvalidRuntimeTopology)?;
+    let rscript_directory = r_compatible_existing_path(rscript_directory)?;
     let mut path = OsString::from(interpreter_directory.as_os_str());
     path.push(OsStr::new(";"));
     path.push(rscript_directory.as_os_str());
@@ -972,21 +981,103 @@ fn bundled_r_command(
     token_path: &Path,
     control_path: &Path,
     environment: LaunchEnvironment,
-) -> LaunchCommand {
-    LaunchCommand::new(interpreter, bundle.resources())
+) -> Result<LaunchCommand, LifecycleError> {
+    let resources = r_compatible_existing_path(bundle.resources())?;
+    let launcher = r_compatible_existing_path(bundle.launcher())?;
+    let app = r_compatible_existing_path(bundle.app())?;
+    let token_parent = token_path
+        .parent()
+        .ok_or(LifecycleError::InvalidRuntimeTopology)?;
+    if control_path.parent() != Some(token_parent) {
+        return Err(LifecycleError::InvalidRuntimeTopology);
+    }
+    let session_directory = r_compatible_existing_path(token_parent)?;
+    let token_file = session_directory.join(
+        token_path
+            .file_name()
+            .ok_or(LifecycleError::InvalidRuntimeTopology)?,
+    );
+    let control_file = session_directory.join(
+        control_path
+            .file_name()
+            .ok_or(LifecycleError::InvalidRuntimeTopology)?,
+    );
+
+    Ok(LaunchCommand::new(interpreter, resources)
         .args([
             OsString::from("--vanilla"),
-            bundle.launcher().as_os_str().to_owned(),
+            launcher.into_os_string(),
             OsString::from("--app"),
-            bundle.app().as_os_str().to_owned(),
+            app.into_os_string(),
             OsString::from("--port"),
             OsString::from(port.to_string()),
             OsString::from("--token-file"),
-            token_path.as_os_str().to_owned(),
+            token_file.into_os_string(),
             OsString::from("--control"),
-            control_path.as_os_str().to_owned(),
+            control_file.into_os_string(),
         ])
-        .environment(environment)
+        .environment(environment))
+}
+
+fn r_compatible_existing_path(path: &Path) -> Result<PathBuf, LifecycleError> {
+    if !path.is_absolute() {
+        return Err(LifecycleError::UnsupportedRPath);
+    }
+    let compatible = ordinary_windows_path(path)?;
+    let canonical_original = fs::canonicalize(path).map_err(|source| LifecycleError::Io {
+        operation: "canonicalize validated R path",
+        source,
+    })?;
+    let canonical_compatible =
+        fs::canonicalize(&compatible).map_err(|source| LifecycleError::Io {
+            operation: "canonicalize R-compatible path alias",
+            source,
+        })?;
+    if canonical_original != canonical_compatible {
+        return Err(LifecycleError::RPathAliasMismatch);
+    }
+    Ok(compatible)
+}
+
+fn ordinary_windows_path(path: &Path) -> Result<PathBuf, LifecycleError> {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(LifecycleError::UnsupportedRPath);
+    };
+    match prefix.kind() {
+        Prefix::Disk(_) | Prefix::UNC(_, _) => Ok(path.to_path_buf()),
+        Prefix::VerbatimDisk(drive) => {
+            let mut ordinary = PathBuf::from(format!("{}:\\", char::from(drive)));
+            append_normal_components(&mut ordinary, components)?;
+            Ok(ordinary)
+        }
+        Prefix::VerbatimUNC(server, share) => {
+            let mut root = OsString::from(r"\\");
+            root.push(server);
+            root.push(OsStr::new(r"\"));
+            root.push(share);
+            let mut ordinary = PathBuf::from(root);
+            append_normal_components(&mut ordinary, components)?;
+            Ok(ordinary)
+        }
+        Prefix::Verbatim(_) | Prefix::DeviceNS(_) => Err(LifecycleError::UnsupportedRPath),
+    }
+}
+
+fn append_normal_components<'a>(
+    path: &mut PathBuf,
+    components: impl Iterator<Item = Component<'a>>,
+) -> Result<(), LifecycleError> {
+    for component in components {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(value) => path.push(value),
+            Component::Prefix(_) | Component::CurDir | Component::ParentDir => {
+                return Err(LifecycleError::UnsupportedRPath);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn authenticated_http_ready(
@@ -1264,6 +1355,13 @@ pub enum LifecycleError {
     /// The validated Rscript path did not have the required `R/bin` topology.
     #[error("the validated bundled runtime topology was invalid")]
     InvalidRuntimeTopology,
+    /// A validated path could not be represented as an ordinary Windows path
+    /// accepted by the R command-line front end.
+    #[error("a validated runtime path was not compatible with R on Windows")]
+    UnsupportedRPath,
+    /// Removing a Windows verbatim prefix did not resolve to the same object.
+    #[error("an R-compatible path alias did not match its validated resource")]
+    RPathAliasMismatch,
     /// This release line currently supports only x86-64 Windows portable R.
     #[error("the current Windows architecture is not supported")]
     UnsupportedWindowsArchitecture,
@@ -1390,7 +1488,9 @@ pub enum LifecycleError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LifecycleLimits, success_status_line};
+    use std::path::{Path, PathBuf};
+
+    use super::{LifecycleError, LifecycleLimits, ordinary_windows_path, success_status_line};
 
     #[test]
     fn status_line_accepts_only_http_one_success_or_redirect() {
@@ -1406,5 +1506,22 @@ mod tests {
     #[test]
     fn default_limits_are_valid() -> Result<(), super::LifecycleError> {
         LifecycleLimits::default().validate()
+    }
+
+    #[test]
+    fn r_paths_remove_only_supported_verbatim_prefixes() -> Result<(), super::LifecycleError> {
+        assert_eq!(
+            ordinary_windows_path(Path::new(r"\\?\C:\bundle with spaces\resources\launcher.R"))?,
+            PathBuf::from(r"C:\bundle with spaces\resources\launcher.R")
+        );
+        assert_eq!(
+            ordinary_windows_path(Path::new(r"\\?\UNC\server\share\bundle\resources"))?,
+            PathBuf::from(r"\\server\share\bundle\resources")
+        );
+        assert!(matches!(
+            ordinary_windows_path(Path::new(r"\\?\GLOBALROOT\Device\HarddiskVolume1")),
+            Err(LifecycleError::UnsupportedRPath)
+        ));
+        Ok(())
     }
 }

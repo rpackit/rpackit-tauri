@@ -10,7 +10,8 @@ Startup succeeds only after:
 1. schema-1/protocol-2 resources pass non-executing validation;
 2. a protected private session and one-time `S` token file are created;
 3. ambient R/rpackit environment variables are removed and the bundled
-   runtime/library are selected explicitly;
+   runtime/library are selected explicitly, with canonical paths revalidated
+   as ordinary R-compatible Windows aliases;
 4. the direct `R/bin/x64/Rscript.exe` interpreter is created suspended,
    assigned to the no-breakaway kill-on-close Job, verified and resumed;
 5. the token file is gone and a valid post-bind `listening` event arrives;

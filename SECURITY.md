@@ -80,6 +80,11 @@ and non-protocol stdout are never retained. This fixture is deliberately not
 evidence about real R, generated launcher behavior, Shiny, or the proxy/WebView
 shutdown sequence.
 
+The validator keeps canonical paths as the security identity, while the
+lifecycle owner gives R only revalidated ordinary drive or UNC aliases.
+Removing a Windows verbatim prefix must canonicalize back to the identical
+resource; unsupported device paths and mismatched aliases fail before launch.
+
 The real-R acceptance target is separate and remote-only. GitHub Actions pins
 the rpackit and `hello-shiny` commits, verifies the existing portable-R
 Release archive against its immutable SHA-256, and owns every large file under

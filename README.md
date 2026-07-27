@@ -259,6 +259,12 @@ R/bin/x64/Rscript.exe --vanilla launcher.R --app <path> --port <port>
   --token-file <private-path> --control <private-path>
 ```
 
+Canonical paths remain the validation identity. Before any path reaches R,
+the lifecycle owner removes only supported Windows verbatim prefixes and
+canonicalizes the resulting ordinary path again to prove that it names the
+same validated object. This avoids passing `\\?\` paths to R while preserving
+the fail-closed containment decision.
+
 The owner drains stderr without retaining text and feeds stdout only to the
 bounded protocol decoder. It returns from startup only after token deletion,
 the matching post-bind `listening` event, create-time-aware Job-member capture,

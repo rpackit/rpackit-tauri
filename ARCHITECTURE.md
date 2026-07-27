@@ -159,6 +159,11 @@ cleaning the known files, preserves unexpected entries, and retains the exact
 session for an explicit cleanup retry. Dropping an unclean owner invokes the
 same forced Job path best-effort.
 
+Resource validation continues to use canonical Windows paths. The lifecycle
+boundary derives ordinary drive or UNC aliases for R, then canonicalizes both
+forms and requires identical targets before launch. Unsupported device paths
+or aliases that do not resolve identically fail before process creation.
+
 The synthetic fixture exercises these native boundaries without bundling R.
 It therefore proves orchestration behavior but does not yet prove
 compatibility with the released portable runtime, generated `launcher.R`,

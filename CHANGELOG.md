@@ -60,6 +60,9 @@ All notable changes to this pre-release repository are documented here.
 - Pre-readiness interpreter exits now report only the numeric exit code and
   discarded stderr byte count, preserving diagnostics without retaining
   potentially sensitive stderr text.
+- Canonical resource paths are now revalidated as ordinary drive or UNC
+  aliases before they reach R, avoiding unsupported Windows `\\?\` arguments
+  and environment values without weakening containment checks.
 - Added an executable synthetic-R lifecycle matrix covering graceful and
   forced close, owner drop, malformed protocol, readiness timeout, occupied
   port, post-readiness exit, environment isolation, and preserved audit-entry
