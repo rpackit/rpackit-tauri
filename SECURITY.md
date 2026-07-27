@@ -56,6 +56,12 @@ non-inheritable PID-plus-creation-time handle only after confirming the live
 process belongs to the owned Job. Windows owner-PID tables must then show one
 exact IPv4-loopback listener for that PID and no same-port IPv4/IPv6
 competitor, with liveness and Job membership checked around the snapshot.
+A validated explicit Unicode environment can replace parent inheritance:
+names are unique under Windows' ordinal case-insensitive comparison, entries
+are sorted and exactly double-NUL terminated, malformed fields fail closed,
+Debug output omits names and values, and stored/serialized buffers are
+zeroized. The real-R owner will use it to remove ambient R/rpackit
+configuration without placing any launch secret in the environment.
 A separate native layer atomically creates a protected per-launch directory
 and token/control files whose exact DACL contains only current-account and
 `SYSTEM` full-control allow entries. It reads each DACL back, requires the

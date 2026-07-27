@@ -10,7 +10,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rpackit_windows_launcher::{LaunchCommand, LaunchError, launch};
+use rpackit_windows_launcher::{LaunchCommand, LaunchEnvironment, LaunchError, launch};
 use tempfile::tempdir;
 use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
@@ -21,6 +21,33 @@ use windows::Win32::System::Threading::{
 use windows::core::PCWSTR;
 
 const FIXTURE: &str = env!("CARGO_BIN_EXE_rpackit-launcher-fixture");
+
+#[test]
+fn explicit_environment_replaces_unicode_values_and_removes_ambient_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempdir()?;
+    let mut environment = LaunchEnvironment::from_current()?;
+    environment.set("RPACKIT_ENVIRONMENT_TEST", "old")?;
+    environment.set("rpackit_environment_test", "雪 café")?;
+    assert!(environment.remove("pAtH")?);
+    let command = LaunchCommand::new(FIXTURE, temporary.path())
+        .args([
+            OsString::from("environment"),
+            OsString::from("RPACKIT_ENVIRONMENT_TEST"),
+            OsString::from("PATH"),
+        ])
+        .environment(environment);
+    let mut process = launch(&command)?;
+
+    assert_eq!(process.wait(Duration::from_secs(10))?, Some(0));
+    let mut stdout = String::new();
+    process
+        .take_stdout()
+        .ok_or_else(|| io::Error::other("stdout pipe was unavailable"))?
+        .read_to_string(&mut stdout)?;
+    assert_eq!(stdout, "value=雪 café\nremoved=yes\n");
+    Ok(())
+}
 
 #[test]
 fn launch_preserves_arguments_and_captures_lifecycle_streams()

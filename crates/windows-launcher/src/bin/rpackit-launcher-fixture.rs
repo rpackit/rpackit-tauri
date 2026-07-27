@@ -69,6 +69,17 @@ fn main() -> ExitCode {
             };
             run_listener(Path::new(&outcome_path), Path::new(&stop_path))
         }
+        "environment" => {
+            let Some(present_name) = arguments.next() else {
+                eprintln!("missing present environment name");
+                return ExitCode::from(2);
+            };
+            let Some(removed_name) = arguments.next() else {
+                eprintln!("missing removed environment name");
+                return ExitCode::from(2);
+            };
+            run_environment(&present_name, &removed_name)
+        }
         "sleep" => loop {
             thread::sleep(Duration::from_secs(1));
         },
@@ -77,6 +88,23 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn run_environment(present_name: &std::ffi::OsStr, removed_name: &std::ffi::OsStr) -> ExitCode {
+    let Some(value) = env::var_os(present_name) else {
+        eprintln!("expected environment value was absent");
+        return ExitCode::from(15);
+    };
+    println!("value={}", value.to_string_lossy());
+    println!(
+        "removed={}",
+        if env::var_os(removed_name).is_none() {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    ExitCode::SUCCESS
 }
 
 fn run_listener(outcome_path: &Path, stop_path: &Path) -> ExitCode {

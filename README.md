@@ -182,6 +182,11 @@ start a bundled Windows process tree. It:
 - requires explicit absolute executable and working-directory paths and calls
   `CreateProcessW` with the executable in `lpApplicationName`, without a
   command shell;
+- can replace ambient inheritance with a validated explicit Unicode
+  environment block whose names are unique and sorted by Windows'
+  locale-independent case-insensitive ordering; malformed names/values are
+  rejected, values are omitted from Debug output, and the serialized block is
+  zeroized after process creation;
 - creates the wrapper suspended and supplies an explicit inherited-handle
   allowlist containing only closed stdin plus stdout/stderr lifecycle pipes;
 - creates an unnamed, non-inheritable Job Object, enables
@@ -217,7 +222,10 @@ and its descendant when the Job closes. The same tree test captures exact
 handles for both processes, rejects the test runner as an outside-Job PID, and
 observes both captured identities terminate after Job close. A real
 IPv4-loopback listener test independently matches its Windows owner-PID table
-row to the captured identity. Private-session tests cover paths with spaces,
+row to the captured identity. Explicit-environment tests prove Unicode value
+preservation, case-insensitive replacement, ambient `PATH` removal, Windows
+sorting, exact double-NUL termination, malformed-field rejection, and
+value-free Debug output. Private-session tests cover paths with spaces,
 exact token contents, DACL readback, absent-then-atomic control creation,
 duplicate rejection, invalid input without residue, launcher-style token
 deletion, and preservation of an unexpected audit entry during cleanup.

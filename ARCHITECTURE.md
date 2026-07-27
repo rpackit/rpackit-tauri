@@ -62,6 +62,18 @@ application path, a separately quoted mutable command line, and
 closed stdin and the stdout/stderr lifecycle pipes. An otherwise inheritable
 sentinel handle is excluded by an acceptance test.
 
+The command can also supply its own
+[`CreateProcessW`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+Unicode environment block instead of inheriting the parent block. Environment
+names must be nonempty and contain neither `=` nor NUL; values cannot contain
+NUL. Windows-equivalent names replace rather than duplicate one another, and
+the final entries are ordered with `CompareStringOrdinal(..., TRUE)` before
+exact double-NUL serialization. Debug output reveals only the entry count,
+and both stored entries and the temporary serialized block are zeroized. The
+real-R lifecycle owner must use this API to remove ambient R/rpackit
+configuration and add only non-secret bundled-runtime paths and protocol
+selection.
+
 Before process creation, the launcher creates an unnamed Job Object with
 default non-inheritable security attributes. It sets and then reads back
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; either `BREAKAWAY_OK` policy is a hard
@@ -117,12 +129,13 @@ closing the last Job handle kills remaining members. Tests prove an attempted
 breakaway receives `ERROR_ACCESS_DENIED` and that closing the Job removes both
 a fixture wrapper and its spawned descendant.
 
-The process-creation API intentionally has no secret-bearing inputs. The
-parent's environment is inherited, so callers must never place `S`, `P`, or
-`B` there. The separate private-files API accepts `S` only to write the
-protected token file and does not retain it in the session value. The later
-lifecycle owner will pass only that file's path—not `S` itself—in the R
-launcher arguments.
+The process-creation API intentionally has no secret-bearing inputs. Fixture
+callers may retain the default inherited environment, while the real-R owner
+must supply the sanitized explicit environment described above. Neither form
+may place `S`, `P`, or `B` there. The separate private-files API accepts `S`
+only to write the protected token file and does not retain it in the session
+value. The later lifecycle owner will pass only that file's path—not `S`
+itself—in the R launcher arguments.
 
 The separate safe protocol crate already bounds and parses the prefixed NDJSON
 stream and validates event ordering, fixed loopback/token claims, the selected

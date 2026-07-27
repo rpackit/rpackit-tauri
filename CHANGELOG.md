@@ -18,6 +18,10 @@ All notable changes to this pre-release repository are documented here.
   executable path to `CreateProcessW`, quotes arguments without a shell,
   allowlists only stdin/stdout/stderr lifecycle pipes, and creates the wrapper
   with `CREATE_SUSPENDED`.
+- Added optional explicit Unicode launch environments with Windows ordinal
+  case-insensitive identity and ordering, replacement/removal APIs, strict
+  name/value validation, exact double-NUL serialization, value-free Debug
+  output, and zeroization after `CreateProcessW`.
 - Added an unnamed, non-inheritable Job Object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, exact policy readback, no breakaway
   flags, suspended assignment, process creation-time identity, membership

@@ -14,7 +14,9 @@
 
 mod private_fs;
 
+use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::File;
 use std::mem::{offset_of, size_of};
 use std::net::Ipv4Addr;
@@ -27,6 +29,9 @@ use thiserror::Error;
 use windows::Win32::Foundation::{
     ERROR_INSUFFICIENT_BUFFER, FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
     HANDLE_FLAGS, NO_ERROR, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows::Win32::Globalization::{
+    CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP_STATE_LISTEN, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
@@ -50,11 +55,164 @@ use windows::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
+use zeroize::{Zeroize, Zeroizing};
 
 pub use private_fs::PrivateSession;
 
 const WINDOWS_COMMAND_LINE_LIMIT: usize = 32_767;
 const INTERNAL_FAILURE_EXIT_CODE: u32 = 0x5250_4B49;
+
+#[derive(Clone, Zeroize)]
+#[zeroize(drop)]
+struct EnvironmentEntry {
+    name: Vec<u16>,
+    value: Vec<u16>,
+}
+
+/// An explicit Unicode environment block for one launched process.
+///
+/// Names are unique under Windows' locale-independent, case-insensitive
+/// ordinal comparison. The serialized block is kept in Windows' required sort
+/// order and is zeroized after process creation. Debug output reports only the
+/// number of entries, never names or values.
+#[derive(Clone, Default, Zeroize)]
+#[zeroize(drop)]
+pub struct LaunchEnvironment {
+    entries: Vec<EnvironmentEntry>,
+}
+
+impl fmt::Debug for LaunchEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LaunchEnvironment")
+            .field("entry_count", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LaunchEnvironment {
+    /// Creates an explicit empty environment.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Copies the current process environment into a validated explicit block.
+    ///
+    /// Repeated Windows-equivalent names are collapsed deterministically, with
+    /// the last observed value taking precedence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current block contains a malformed name or
+    /// value, or Windows cannot compare its names.
+    pub fn from_current() -> Result<Self, LaunchError> {
+        let mut environment = Self::empty();
+        for (name, value) in std::env::vars_os() {
+            environment.set(name, value)?;
+        }
+        Ok(environment)
+    }
+
+    /// Sets or replaces one variable using Windows case-insensitive identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty name, a name containing `=` or a NUL, a
+    /// value containing a NUL, or a failed native name comparison.
+    pub fn set(
+        &mut self,
+        name: impl AsRef<OsStr>,
+        value: impl AsRef<OsStr>,
+    ) -> Result<(), LaunchError> {
+        let name = environment_name(name.as_ref())?;
+        let value = environment_value(value.as_ref())?;
+        if let Some(index) = self.find_name(&name)? {
+            self.entries[index] = EnvironmentEntry { name, value };
+        } else {
+            self.entries.push(EnvironmentEntry { name, value });
+        }
+        self.sort_entries()
+    }
+
+    /// Removes one variable using Windows case-insensitive identity.
+    ///
+    /// Returns whether a matching entry existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed name or a failed native comparison.
+    pub fn remove(&mut self, name: impl AsRef<OsStr>) -> Result<bool, LaunchError> {
+        let name = environment_name(name.as_ref())?;
+        let Some(index) = self.find_name(&name)? else {
+            return Ok(false);
+        };
+        self.entries.remove(index);
+        Ok(true)
+    }
+
+    /// Returns the number of case-insensitively unique entries.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether this explicit environment has no entries.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn find_name(&self, name: &[u16]) -> Result<Option<usize>, LaunchError> {
+        for (index, entry) in self.entries.iter().enumerate() {
+            if compare_environment_names(&entry.name, name)? == Ordering::Equal {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
+    fn sort_entries(&mut self) -> Result<(), LaunchError> {
+        for index in 1..self.entries.len() {
+            let mut cursor = index;
+            while cursor > 0
+                && compare_environment_names(
+                    &self.entries[cursor - 1].name,
+                    &self.entries[cursor].name,
+                )? == Ordering::Greater
+            {
+                self.entries.swap(cursor - 1, cursor);
+                cursor -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn encoded_block(&self) -> Result<Zeroizing<Vec<u16>>, LaunchError> {
+        let capacity = self.entries.iter().try_fold(1_usize, |total, entry| {
+            total
+                .checked_add(entry.name.len())
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| value.checked_add(entry.value.len()))
+                .and_then(|value| value.checked_add(1))
+                .ok_or(LaunchError::EnvironmentBlockTooLarge)
+        })?;
+        let mut block = Zeroizing::new(Vec::with_capacity(capacity.max(2)));
+        for entry in &self.entries {
+            block.extend_from_slice(&entry.name);
+            block.push(u16::from(b'='));
+            block.extend_from_slice(&entry.value);
+            block.push(0);
+        }
+        block.push(0);
+        if self.entries.is_empty() {
+            block.push(0);
+        }
+        Ok(block)
+    }
+}
 
 /// A bundled executable invocation to be placed in an owned Windows Job.
 #[derive(Clone, Debug)]
@@ -62,6 +220,7 @@ pub struct LaunchCommand {
     program: PathBuf,
     arguments: Vec<OsString>,
     current_directory: PathBuf,
+    environment: Option<LaunchEnvironment>,
 }
 
 impl LaunchCommand {
@@ -71,6 +230,7 @@ impl LaunchCommand {
             program: program.into(),
             arguments: Vec::new(),
             current_directory: current_directory.into(),
+            environment: None,
         }
     }
 
@@ -89,6 +249,14 @@ impl LaunchCommand {
         S: Into<OsString>,
     {
         self.arguments.extend(arguments.into_iter().map(Into::into));
+        self
+    }
+
+    /// Uses a validated explicit Unicode environment instead of inheriting the
+    /// parent's block.
+    #[must_use]
+    pub fn environment(mut self, environment: LaunchEnvironment) -> Self {
+        self.environment = Some(environment);
         self
     }
 }
@@ -376,8 +544,9 @@ impl JobProcess {
 /// membership, and resumes it.
 ///
 /// No shell is involved. The process inherits only its stdin, stdout, and
-/// stderr pipe handles. The parent's environment is inherited unchanged; no
-/// credential should ever be placed there.
+/// stderr pipe handles. A command can supply an explicit validated environment;
+/// otherwise the parent's environment is inherited unchanged. No credential
+/// should ever be placed in either arguments or environment variables.
 ///
 /// # Errors
 ///
@@ -417,6 +586,14 @@ fn launch_with_assignment_target(
     let current_directory =
         nul_terminated_wide(command.current_directory.as_os_str(), "current directory")?;
     let mut command_line = build_command_line(&command.program, &command.arguments)?;
+    let environment_block = command
+        .environment
+        .as_ref()
+        .map(LaunchEnvironment::encoded_block)
+        .transpose()?;
+    let environment_pointer = environment_block
+        .as_ref()
+        .map(|block| block.as_ptr().cast::<std::ffi::c_void>());
 
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = native_structure_size::<STARTUPINFOEXW>()?;
@@ -436,7 +613,8 @@ fn launch_with_assignment_target(
     // command-line buffer is mutable as required by CreateProcessW. The three
     // inheritable handles are explicitly allowlisted and stay alive through
     // process creation. The executable and current directory are absolute
-    // paths validated above.
+    // paths validated above. Any explicit Unicode environment block remains
+    // live and double-NUL terminated for the duration of this call.
     unsafe {
         CreateProcessW(
             PCWSTR(program.as_ptr()),
@@ -445,7 +623,7 @@ fn launch_with_assignment_target(
             None,
             true,
             creation_flags,
-            None,
+            environment_pointer,
             PCWSTR(current_directory.as_ptr()),
             &raw const startup.StartupInfo,
             &raw mut process_information,
@@ -940,6 +1118,43 @@ fn nul_terminated_wide(value: &OsStr, field: &'static str) -> Result<Vec<u16>, L
     Ok(wide)
 }
 
+fn environment_name(value: &OsStr) -> Result<Vec<u16>, LaunchError> {
+    let wide: Vec<u16> = value.encode_wide().collect();
+    if wide.is_empty()
+        || wide.contains(&0)
+        || wide.contains(&u16::from(b'='))
+        || i32::try_from(wide.len()).is_err()
+    {
+        return Err(LaunchError::InvalidEnvironmentName);
+    }
+    Ok(wide)
+}
+
+fn environment_value(value: &OsStr) -> Result<Vec<u16>, LaunchError> {
+    let wide: Vec<u16> = value.encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(LaunchError::InvalidEnvironmentValue);
+    }
+    Ok(wide)
+}
+
+fn compare_environment_names(left: &[u16], right: &[u16]) -> Result<Ordering, LaunchError> {
+    debug_assert!(i32::try_from(left.len()).is_ok());
+    debug_assert!(i32::try_from(right.len()).is_ok());
+    // SAFETY: Both slices are valid UTF-16 storage with lengths already shown
+    // to fit the Win32 signed count. The API reads but does not retain them.
+    let result = unsafe { CompareStringOrdinal(left, right, true) };
+    if result == CSTR_LESS_THAN {
+        Ok(Ordering::Less)
+    } else if result == CSTR_EQUAL {
+        Ok(Ordering::Equal)
+    } else if result == CSTR_GREATER_THAN {
+        Ok(Ordering::Greater)
+    } else {
+        Err(LaunchError::EnvironmentComparisonFailed)
+    }
+}
+
 fn duration_milliseconds(duration: Duration) -> u32 {
     u32::try_from(duration.as_millis()).unwrap_or(u32::MAX - 1)
 }
@@ -1022,6 +1237,18 @@ pub enum LaunchError {
     /// `CreateProcessW` has a fixed command-line limit.
     #[error("the Windows command line exceeds 32,766 UTF-16 code units")]
     CommandLineTooLong,
+    /// Environment names must be nonempty and contain neither `=` nor NUL.
+    #[error("an environment variable name was empty or contained '=' or NUL")]
+    InvalidEnvironmentName,
+    /// Environment values cannot contain a UTF-16 NUL.
+    #[error("an environment variable value contained a NUL")]
+    InvalidEnvironmentValue,
+    /// A serialized environment block overflowed addressable storage.
+    #[error("the explicit environment block was too large")]
+    EnvironmentBlockTooLarge,
+    /// Windows could not compare two environment variable names.
+    #[error("Windows could not compare environment variable names")]
+    EnvironmentComparisonFailed,
     /// A native structure did not fit the Windows 32-bit size field.
     #[error("a native structure is too large for its Windows size field")]
     NativeStructureTooLarge,
@@ -1081,6 +1308,7 @@ pub enum LaunchError {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
     use std::thread;
     use std::time::Duration;
@@ -1088,9 +1316,76 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AssignmentTarget, LaunchCommand, build_command_line, launch_with_assignment_target,
-        quote_windows_argument,
+        AssignmentTarget, LaunchCommand, LaunchEnvironment, LaunchError, build_command_line,
+        launch_with_assignment_target, quote_windows_argument,
     };
+
+    #[test]
+    fn environment_is_sorted_deduplicated_and_double_terminated() -> Result<(), super::LaunchError>
+    {
+        let mut environment = LaunchEnvironment::empty();
+        environment.set("zeta", "last")?;
+        environment.set("ALPHA", "old")?;
+        environment.set("beta", "middle")?;
+        environment.set("alpha", "new")?;
+
+        assert_eq!(environment.len(), 3);
+        let block = environment.encoded_block()?;
+        assert!(block.ends_with(&[0, 0]));
+        assert!(!block.ends_with(&[0, 0, 0]));
+        let entries: Vec<String> = block[..block.len() - 2]
+            .split(|value| *value == 0)
+            .map(String::from_utf16_lossy)
+            .collect();
+        assert_eq!(entries, ["alpha=new", "beta=middle", "zeta=last"]);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_environment_has_exact_double_terminator() -> Result<(), super::LaunchError> {
+        let block = LaunchEnvironment::empty().encoded_block()?;
+        assert_eq!(&*block, &[0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_environment_fields_are_rejected() {
+        let mut environment = LaunchEnvironment::empty();
+        let nul_name = OsString::from_wide(&[u16::from(b'A'), 0, u16::from(b'B')]);
+        let nul_value = OsString::from_wide(&[u16::from(b'A'), 0, u16::from(b'B')]);
+
+        assert!(matches!(
+            environment.set("", "value"),
+            Err(LaunchError::InvalidEnvironmentName)
+        ));
+        assert!(matches!(
+            environment.set("A=B", "value"),
+            Err(LaunchError::InvalidEnvironmentName)
+        ));
+        assert!(matches!(
+            environment.set(nul_name, "value"),
+            Err(LaunchError::InvalidEnvironmentName)
+        ));
+        assert!(matches!(
+            environment.set("NAME", nul_value),
+            Err(LaunchError::InvalidEnvironmentValue)
+        ));
+        assert!(matches!(
+            environment.remove("="),
+            Err(LaunchError::InvalidEnvironmentName)
+        ));
+    }
+
+    #[test]
+    fn environment_debug_never_exposes_names_or_values() -> Result<(), super::LaunchError> {
+        let mut environment = LaunchEnvironment::empty();
+        environment.set("SECRET_NAME", "highly-sensitive-value")?;
+        let debug = format!("{environment:?}");
+        assert!(debug.contains("entry_count"));
+        assert!(!debug.contains("SECRET_NAME"));
+        assert!(!debug.contains("highly-sensitive-value"));
+        Ok(())
+    }
 
     #[test]
     fn quotes_windows_arguments_without_changing_values() -> Result<(), super::LaunchError> {
