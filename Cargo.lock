@@ -2627,6 +2627,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpackit-windows-shell"
+version = "0.1.0"
+dependencies = [
+ "rpackit-transport",
+ "rpackit-windows-lifecycle",
+ "rpackit-windows-webview",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rpackit-windows-spike"
 version = "0.1.0"
 dependencies = [
@@ -2640,6 +2655,23 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
+ "tokio",
+ "url",
+ "webview2-com",
+ "windows",
+ "winreg",
+ "zeroize",
+]
+
+[[package]]
+name = "rpackit-windows-webview"
+version = "0.1.0"
+dependencies = [
+ "rpackit-transport",
+ "rpackit-windows-lifecycle",
+ "tauri",
+ "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "url",
  "webview2-com",

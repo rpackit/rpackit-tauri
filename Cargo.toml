@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "apps/windows-shell",
   "apps/windows-spike",
   "crates/launcher-protocol",
   "crates/resource-bundle",
@@ -7,6 +8,7 @@ members = [
   "crates/transport-testkit",
   "crates/windows-lifecycle",
   "crates/windows-launcher",
+  "crates/windows-webview",
 ]
 default-members = [
   "crates/launcher-protocol",

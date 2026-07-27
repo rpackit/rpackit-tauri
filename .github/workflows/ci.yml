@@ -57,6 +57,9 @@ jobs:
       - name: Build shell without installer
         working-directory: apps/windows-spike
         run: cargo tauri build --no-bundle
+      - name: Build native application shell without installer
+        working-directory: apps/windows-shell
+        run: cargo tauri build --no-bundle
       - name: Run WebView2 development-runtime gates
         shell: powershell
         run: |

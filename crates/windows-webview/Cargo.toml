@@ -1,0 +1,25 @@
+[package]
+name = "rpackit-windows-webview"
+description = "Native-only secure WebView2 and per-launch profile owner for rpackit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rpackit-transport = { path = "../transport" }
+rpackit-windows-lifecycle = { path = "../windows-lifecycle" }
+tauri.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+webview2-com.workspace = true
+windows.workspace = true
+winreg.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

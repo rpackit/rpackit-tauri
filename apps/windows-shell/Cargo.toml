@@ -1,0 +1,25 @@
+[package]
+name = "rpackit-windows-shell"
+description = "Fail-closed native Windows shell for one prepared rpackit bundle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+rpackit-transport = { path = "../../crates/transport" }
+rpackit-windows-lifecycle = { path = "../../crates/windows-lifecycle" }
+rpackit-windows-webview = { path = "../../crates/windows-webview" }
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
