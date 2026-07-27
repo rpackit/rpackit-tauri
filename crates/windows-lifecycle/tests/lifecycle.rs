@@ -3,17 +3,22 @@
 #![cfg(windows)]
 
 use std::fs;
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use rpackit_transport::TransportSecrets;
+use rpackit_transport::{
+    BOOTSTRAP_HEADER_NAME, ProxyAddress, SESSION_COOKIE_NAME, TransportLimits, TransportSecrets,
+};
 use rpackit_windows_lifecycle::{
-    LifecycleError, LifecycleLimits, RuntimeOwner, ShutdownKind, select_upstream_port,
+    LifecycleError, LifecycleLimits, NativeAppOwner, RuntimeOwner, ShutdownKind,
+    select_upstream_port,
 };
 use serde_json::json;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
 use zeroize::Zeroizing;
 
 const FIXTURE: &str = env!("CARGO_BIN_EXE_rpackit-runtime-fixture");
@@ -99,6 +104,115 @@ impl FixtureBundle {
     fn sessions_are_empty(&self) -> Result<bool, std::io::Error> {
         Ok(fs::read_dir(&self.sessions)?.next().is_none())
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_app_owner_proxies_the_authenticated_runtime_and_cleans_both_sides()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = FixtureBundle::new("normal")?;
+    let mut owner = NativeAppOwner::launch(
+        &fixture.bundle,
+        &fixture.sessions,
+        test_limits(),
+        TransportLimits::default(),
+    )
+    .await?;
+    let browser = owner.browser_launch()?;
+    let address = browser.address().clone();
+    let bootstrap = Zeroizing::new(browser.bootstrap_secret().with_exposed(str::to_owned));
+    let session = Zeroizing::new(browser.session_secret().with_exposed(str::to_owned));
+
+    let bootstrap_request = Zeroizing::new(format!(
+        "GET /__rpackit_bootstrap HTTP/1.1\r\nHost: {}\r\n{}: {}\r\n\
+         Connection: close\r\n\r\n",
+        address.authority(),
+        BOOTSTRAP_HEADER_NAME,
+        bootstrap.as_str()
+    ));
+    let bootstrap_response =
+        Zeroizing::new(raw_proxy_request(&address, bootstrap_request.as_bytes()).await?);
+    assert!(contains_bytes(&bootstrap_response, b"HTTP/1.1 200 OK"));
+    let expected_cookie = Zeroizing::new(format!(
+        "{SESSION_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict",
+        session.as_str()
+    ));
+    assert!(contains_bytes(
+        &bootstrap_response,
+        expected_cookie.as_bytes()
+    ));
+
+    let replay_response = raw_proxy_request(&address, bootstrap_request.as_bytes()).await?;
+    assert!(contains_bytes(
+        &replay_response,
+        b"HTTP/1.1 401 Unauthorized"
+    ));
+
+    let root_request = Zeroizing::new(format!(
+        "GET / HTTP/1.1\r\nHost: {}\r\nCookie: {SESSION_COOKIE_NAME}={}\r\n\
+         Connection: close\r\n\r\n",
+        address.authority(),
+        session.as_str()
+    ));
+    let root_response = raw_proxy_request(&address, root_request.as_bytes()).await?;
+    assert!(contains_bytes(&root_response, b"HTTP/1.1 200 OK"));
+    assert!(root_response.ends_with(b"\r\n\r\nok"));
+
+    let missing_cookie_request = format!(
+        "GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        address.authority()
+    );
+    let missing_cookie_response =
+        raw_proxy_request(&address, missing_cookie_request.as_bytes()).await?;
+    assert!(contains_bytes(
+        &missing_cookie_response,
+        b"HTTP/1.1 401 Unauthorized"
+    ));
+
+    owner.poll_health().await?;
+    drop(browser);
+    drop(expected_cookie);
+    drop(bootstrap_response);
+    drop(bootstrap_request);
+    drop(root_request);
+    drop(session);
+    drop(bootstrap);
+    let report = owner.shutdown().await?;
+
+    assert!(report.proxy_stopped);
+    assert_eq!(report.runtime.kind, ShutdownKind::Graceful);
+    assert!(report.runtime.job_empty);
+    assert!(report.runtime.session_removed);
+    assert!(fixture.sessions_are_empty()?);
+    assert!(
+        tokio::net::TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, address.port()))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_health_failure_closes_the_proxy_and_forces_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = FixtureBundle::new("exit-after-ready")?;
+    let mut owner = NativeAppOwner::launch(
+        &fixture.bundle,
+        &fixture.sessions,
+        test_limits(),
+        TransportLimits::default(),
+    )
+    .await?;
+    let address = owner.browser_launch()?.address().clone();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(owner.poll_health().await.is_err());
+    assert!(fixture.sessions_are_empty()?);
+    assert!(
+        tokio::net::TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, address.port()))
+            .await
+            .is_err()
+    );
+    Ok(())
 }
 
 #[test]
@@ -364,6 +478,40 @@ fn require_launch_error(
             Err(message.into())
         }
     }
+}
+
+async fn raw_proxy_request(
+    address: &ProxyAddress,
+    request: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+    let socket = SocketAddrV4::new(Ipv4Addr::LOCALHOST, address.port());
+    let mut stream = timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect(socket),
+    )
+    .await??;
+    timeout(Duration::from_secs(2), stream.write_all(request)).await??;
+    timeout(Duration::from_secs(2), stream.flush()).await??;
+    let mut response = Vec::new();
+    timeout(
+        Duration::from_secs(2),
+        (&mut stream)
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response),
+    )
+    .await??;
+    if u64::try_from(response.len())? > MAX_RESPONSE_BYTES {
+        return Err("proxy response exceeded the test limit".into());
+    }
+    Ok(response)
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn valid_manifest() -> serde_json::Value {

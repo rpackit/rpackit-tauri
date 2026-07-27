@@ -9,6 +9,8 @@
 #![cfg(windows)]
 #![forbid(unsafe_code)]
 
+mod desktop;
+
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -33,6 +35,8 @@ use rpackit_windows_launcher::{
 };
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+pub use desktop::{BrowserLaunch, NativeAppError, NativeAppOwner, NativeAppShutdownReport};
 
 const FORCED_EXIT_CODE: u32 = 0x5250_4B46;
 const STATUS_LINE_MAX_BYTES: usize = 512;
@@ -203,6 +207,55 @@ impl RuntimeOwner {
         // This must remain the first filesystem/content operation: no session
         // or process exists until the complete resource contract passes.
         let bundle = ValidatedBundle::load(bundle)?;
+        Self::launch_validated_inner(
+            bundle,
+            session_parent.as_ref(),
+            upstream_port,
+            secrets,
+            limits,
+        )
+    }
+
+    /// Starts one bundled R lifecycle from an already validated resource
+    /// value.
+    ///
+    /// This entry point lets a higher-level native owner validate resources
+    /// once before binding its browser-facing proxy. It creates no session or
+    /// process until the supplied [`ValidatedBundle`] exists and all scalar
+    /// launch inputs pass validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same secret-free startup and cleanup failures as
+    /// [`Self::launch`].
+    pub fn launch_validated(
+        bundle: ValidatedBundle,
+        session_parent: impl AsRef<Path>,
+        upstream_port: u16,
+        secrets: &TransportSecrets,
+        limits: LifecycleLimits,
+    ) -> Result<Self, LifecycleError> {
+        limits.validate()?;
+        if upstream_port == 0 {
+            return Err(LifecycleError::InvalidUpstreamPort);
+        }
+        Self::launch_validated_inner(
+            bundle,
+            session_parent.as_ref(),
+            upstream_port,
+            secrets,
+            limits,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn launch_validated_inner(
+        bundle: ValidatedBundle,
+        session_parent: &Path,
+        upstream_port: u16,
+        secrets: &TransportSecrets,
+        limits: LifecycleLimits,
+    ) -> Result<Self, LifecycleError> {
         let session = PrivateSession::create(session_parent)?;
         let upstream_secret = secrets.upstream();
 
