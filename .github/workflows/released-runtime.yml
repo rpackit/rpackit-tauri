@@ -30,7 +30,7 @@ env:
   RPACKIT_RUNTIME_URL: "https://github.com/rpackit/runtime-win/releases/download/v4.6.1/portable-r-windows-x86_64-4.6.1.zip"
   RPACKIT_RUNTIME_SHA256: "d106a4ad618a5279d9db4a61412505a5353c94e402920c0d3a627d37c5f1bf50"
   RPACKIT_RUNTIME_HOME: "portable-r-windows-x86_64-4.6.1"
-  RPACKIT_PACKAGE_SHA: "990cbbc59b6ea7f8b90e422a4e0060dc56cffd2b"
+  RPACKIT_PACKAGE_SHA: "ba96617431a37b2abd482a5c9406ebba9bab7994"
   RPACKIT_EXAMPLES_SHA: "385807ab418ece8875deb321db4878594882868e"
   RPACKIT_CRAN_REPOSITORY: "https://cloud.r-project.org"
 

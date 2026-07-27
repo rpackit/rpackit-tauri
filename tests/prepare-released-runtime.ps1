@@ -173,7 +173,9 @@ $systemInstallScript = Join-Path $resolvedWorkRoot (
 )
 @'
 library_path <- Sys.getenv("RPACKIT_GATE_SYSTEM_LIBRARY")
-packages <- c("cli", "digest", "jsonlite", "openssl", "processx", "ps", "zip")
+packages <- c(
+  "cli", "digest", "jsonlite", "openssl", "processx", "ps", "rlang", "zip"
+)
 options(timeout = 600)
 install.packages(
   packages,
