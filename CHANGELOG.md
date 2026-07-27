@@ -74,12 +74,18 @@ All notable changes to this pre-release repository are documented here.
   only two small secret-free JSON evidence files, and deletes the archive,
   extracted and copied runtimes, package libraries, Cargo target, and private
   sessions.
+- Recorded the first reviewed passing released-runtime
+  [run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589).
+  The pinned native R/package probe and the authenticated, credential-denial,
+  graceful, forced, owner-drop, runtime-crash, timeout, occupied-port,
+  profile-isolation, Job-empty, private-session, and secret-free evidence
+  gates all passed; the complete runner work root was then removed.
 - Changed manual WebView2 runners to use a uniquely named system-temp Cargo
   target by default and remove it after completion. CI explicitly reuses its
   runner-owned repository target; only a caller-supplied target is retained.
-- Kept the Phase 2 boundary explicit: generated native-metadata validation,
-  proxy/WebView orchestration and a reviewed passing released-runtime workflow
-  run remain in progress.
+- Kept the Phase 2 boundary explicit: generated native-metadata validation and
+  proxy/WebView orchestration remain in progress after the released-runtime
+  process-owner gate.
 
 ### Transport contract version 2
 
@@ -274,6 +280,6 @@ All notable changes to this pre-release repository are documented here.
 
 ### Known pre-release gaps
 
-- The released portable-R/`hello-shiny` workflow needs a reviewed passing run,
-  and the production Tauri owner still needs to compose this R lifecycle with
-  the authenticated proxy/WebView shutdown sequence.
+- The production Tauri owner still needs to compose the verified R lifecycle
+  with the authenticated proxy/WebView shutdown sequence and generated
+  application resources.

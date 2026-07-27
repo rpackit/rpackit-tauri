@@ -4,9 +4,10 @@ Maintained native Tauri templates and the security-critical loopback transport
 for [rpackit](https://github.com/rpackit/rpackit).
 
 The repository contains the completed Windows **Phase 1 transport spike** and
-the first fail-closed **Phase 2 process-owner foundation**. It remains an
-executable acceptance harness, not a supported application generator or
-installer. The authoritative contract is
+a fail-closed **Phase 2 process-owner foundation** whose released portable-R
+and `hello-shiny` lifecycle gate now passes. It remains an executable
+acceptance harness, not a supported application generator or installer. The
+authoritative contract is
 [`TAURI_SECURE_TRANSPORT.md`](https://github.com/rpackit/roadmap/blob/main/TAURI_SECURE_TRANSPORT.md);
 this implementation follows transport contract version 2.
 
@@ -300,9 +301,10 @@ libraries, Cargo target, profiles, and sessions are deleted together before
 the runner finishes.
 
 This is deliberately not a full Phase 2 claim. Generating the complete native
-Tauri launch state around the proxy/WebView remains required. The new
-released-runtime workflow must also produce a reviewed passing run before its
-real-R checks count as completed evidence.
+Tauri launch state around the proxy/WebView remains required. The
+[first reviewed passing released-runtime run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+at commit `10359b9` closes the real-R process-owner gate without claiming the
+combined shell or an installer.
 
 ## Development
 
@@ -537,8 +539,9 @@ Job/process creation, exact runtime PID/listener capture, strict protocol-2
 decoding, atomically restricted token/control files, and one integrated
 synthetic lifecycle owner with authenticated readiness and deterministic
 shutdown. A remote-only released portable-R/`hello-shiny` workflow now owns
-the real-runtime matrix and all of its temporary storage; its first reviewed
-passing run is still required before that gate is claimed complete. Native
-shell composition, resource generation, and installers are later milestones. See
+the real-runtime matrix and all of its temporary storage. Its
+[reviewed run 30233439589](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+passed the complete matrix and cleanup, closing this real-R gate. Native shell
+composition, resource generation, and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

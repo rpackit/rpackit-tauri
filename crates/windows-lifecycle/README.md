@@ -53,5 +53,7 @@ The repository also defines a separate ignored, GitHub-Actions-only matrix
 against the SHA-256-pinned portable-R Release, generated launcher, and pinned
 `hello-shiny`. It retains only bounded secret-free JSON evidence and deletes
 its archive, extracted/copied runtimes, package libraries, Cargo target, and
-sessions. That workflow must pass and be reviewed before real-R compatibility
-is claimed.
+sessions. Its
+[first reviewed run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+passed every real-R process-owner scenario; that evidence does not extend to
+the later combined proxy/WebView owner or a generated application.

@@ -165,9 +165,10 @@ forms and requires identical targets before launch. Unsupported device paths
 or aliases that do not resolve identically fail before process creation.
 
 The synthetic fixture exercises these native boundaries without bundling R.
-It therefore proves orchestration behavior but does not yet prove
-compatibility with the released portable runtime, generated `launcher.R`,
-Shiny, or the proxy/WebView window-close sequence.
+By itself it proves orchestration behavior, not compatibility with the
+released portable runtime, generated `launcher.R`, Shiny, or the
+proxy/WebView window-close sequence. The separate real-runtime gate below
+supplies the process-owner compatibility evidence.
 
 The released-runtime workflow supplies the next evidence layer without adding
 large repository or workstation state. It verifies the immutable SHA-256 of
@@ -179,6 +180,14 @@ GitHub Actions. Its runner work root contains the archive, both runtime trees,
 system and bundled package libraries, Cargo output, hostile profile probes,
 and private sessions; one verified recursive cleanup removes that exact
 runner-temp child after the small evidence files are uploaded.
+
+The
+[first reviewed passing run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+at commit `10359b9` completed the native interpreter/package probe and the
+authenticated, graceful, forced, owner-drop, runtime-crash, timeout,
+occupied-port, hostile-profile, Job-empty, and session-cleanup scenarios.
+This closes the real-R process-owner evidence layer, not the later
+proxy/WebView composition or generated application.
 
 ## Secret and origin model
 
@@ -636,9 +645,10 @@ resource validator, Job/process-creation, exact process/listener identity,
 protocol decoder, and private DACL file foundations have their own passing
 tests. A remote-only gate now implements real protocol-2 R readiness,
 authenticated `hello-shiny`, graceful/forced/crash/timeout behavior, and
-post-Job profile/session cleanup, but those checks do not become evidence
-until the workflow has a reviewed passing run. They also do not yet prove the
-combined proxy/WebView window-close owner.
+post-Job profile/session cleanup. Its
+[reviewed passing run](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+now provides that evidence. It does not yet prove the combined proxy/WebView
+window-close owner.
 
 ## Maintainer rules
 

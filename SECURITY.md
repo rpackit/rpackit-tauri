@@ -37,8 +37,10 @@ The repository is a pre-release Windows transport acceptance spike. Phase 1
 has passed on both the development Runtime `150.0.4078.99` and the exact
 reviewed x64 Fixed Version Runtime `149.0.4022.98`, in Debug and Release.
 The fixed reports contain no unproven release gate and record
-`phase1_release_ready: true`. This assurance does not cover the Phase 2 R
-launcher lifecycle, a generated application, an installer, or code signing.
+`phase1_release_ready: true`. The separate released portable-R process-owner
+lifecycle described below also has a reviewed passing run. This assurance
+does not cover the combined Phase 2 proxy/WebView owner, a generated
+application, an installer, or code signing.
 Exact-address listener takeover is rejected. The initial Phase 2 native
 resource boundary is implemented and tested separately: bounded strict JSON
 accepts only schema 1 and the complete authenticated protocol-2 Windows
@@ -61,8 +63,9 @@ names are unique under Windows' ordinal case-insensitive comparison, entries
 are sorted and exactly double-NUL terminated, malformed fields fail closed,
 Debug output omits names and values, and stored/serialized buffers are
 zeroized. The lifecycle owner uses it to remove ambient R/rpackit
-configuration without placing any launch secret in the environment; the same
-behavior still needs the released-R acceptance gate.
+configuration without placing any launch secret in the environment. The
+released-R acceptance gate has now exercised that isolation against a hostile
+ambient profile.
 A separate native layer atomically creates a protected per-launch directory
 and token/control files whose exact DACL contains only current-account and
 `SYSTEM` full-control allow entries. It reads each DACL back, requires the
@@ -93,8 +96,13 @@ by ordinary Cargo invocations. Its output is limited to source/runtime
 identities, package versions, booleans, and counters; token values, PIDs,
 runner paths, raw output, and bundle contents are rejected. The complete
 runner subtree is removed after a seven-day evidence artifact is uploaded.
-The workflow's existence is not proof of real-R behavior: only a reviewed
-passing run can close that gate.
+The
+[reviewed run 30233439589](https://github.com/rpackit/rpackit-tauri/actions/runs/30233439589)
+passed the native interpreter/package probe, authenticated page and credential
+denials, graceful/forced/owner-drop/runtime-crash/timeout/occupied-port
+scenarios, profile isolation, zero-member Job checks, private-session cleanup,
+and the bounded secret-free evidence check. This closes only the real-R
+process-owner gate.
 
 The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
 creation, matching the documented
