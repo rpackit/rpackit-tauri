@@ -68,7 +68,7 @@ jobs:
         shell: powershell
         run: |
           $workRoot = Join-Path $env:RUNNER_TEMP (
-            "rpackit released runtime $env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+            "rpackit-released-runtime-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           )
           @(
             "RPACKIT_GATE_WORK_ROOT=$workRoot",
@@ -145,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: released-portable-r-hello-shiny-evidence
-          path: ${{ runner.temp }}\rpackit released runtime ${{ github.run_id }}-${{ github.run_attempt }}\evidence\*.json
+          path: ${{ runner.temp }}\rpackit-released-runtime-${{ github.run_id }}-${{ github.run_attempt }}\evidence\*.json
           if-no-files-found: warn
           retention-days: 7
 
