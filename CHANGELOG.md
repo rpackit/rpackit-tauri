@@ -4,6 +4,13 @@ All notable changes to this pre-release repository are documented here.
 
 ## Unreleased
 
+### Reliability
+
+- Replaced the forced-crash probe's one-shot profile-directory close with a
+  bounded retry that revalidates the exact system-temporary random directory
+  before every removal attempt. This tolerates delayed Evergreen WebView2
+  handle release without broadening cleanup scope.
+
 ### Generated-project template
 
 - Added the versioned Windows generated-project template contract and reduced

@@ -5,13 +5,14 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     net::{Ipv4Addr, SocketAddr},
+    os::windows::fs::MetadataExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rpackit_transport::{ProxyConfig, RunningProxy, SESSION_COOKIE_NAME, Secret};
@@ -40,9 +41,12 @@ const GRACEFUL_EXIT_CONTENT: &[u8] = b"graceful cleanup reached\n";
 const PRODUCER_COOKIE_SETTLE_DURATION: Duration = Duration::from_secs(2);
 const PRODUCER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const PROFILE_RELEASE_INITIAL_DELAY: Duration = Duration::from_millis(500);
+const PROFILE_DIRECTORY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+const PROFILE_DIRECTORY_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const PROFILE_RECREATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const PROFILE_RECREATION_ATTEMPTS: usize = 20;
 const READY_MARKER_MAX_BYTES: u64 = 128;
+const REPARSE_POINT_ATTRIBUTE: u32 = 0x400;
 
 #[derive(Debug)]
 pub(crate) struct CrashProducerOptions {
@@ -204,9 +208,55 @@ pub(crate) async fn probe(
     };
     let mut evidence = probe_in_directory(app, directory.path(), runtime_selection).await;
     sleep(PROFILE_RELEASE_INITIAL_DELAY).await;
-    evidence.crash_profile_directory_removed = directory.close().is_ok();
+    evidence.crash_profile_directory_removed =
+        remove_probe_directory_bounded(directory.path()).await;
     evidence.probe_completed = true;
     evidence
+}
+
+async fn remove_probe_directory_bounded(path: &Path) -> bool {
+    let deadline = Instant::now() + PROFILE_DIRECTORY_CLEANUP_TIMEOUT;
+    loop {
+        match path.try_exists() {
+            Ok(false) => return true,
+            Err(_) => return false,
+            Ok(true) if !probe_directory_is_strictly_scoped(path) => return false,
+            Ok(true) => {}
+        }
+        match fs::remove_dir_all(path) {
+            Ok(()) => return true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) if Instant::now() >= deadline => return false,
+            Err(_) => sleep(PROFILE_DIRECTORY_CLEANUP_RETRY_DELAY).await,
+        }
+    }
+}
+
+fn probe_directory_is_strictly_scoped(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let Some(suffix) = name.strip_prefix(PROBE_DIRECTORY_PREFIX) else {
+        return false;
+    };
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT_ATTRIBUTE != 0 {
+        return false;
+    }
+    let (Some(parent), Ok(canonical_path), Ok(canonical_temp)) = (
+        path.parent(),
+        fs::canonicalize(path),
+        fs::canonicalize(std::env::temp_dir()),
+    ) else {
+        return false;
+    };
+    fs::canonicalize(parent).is_ok_and(|canonical_parent| canonical_parent == canonical_temp)
+        && canonical_path.parent() == Some(canonical_temp.as_path())
 }
 
 async fn probe_in_directory(
@@ -572,6 +622,34 @@ fn profile_has_entries(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_cleanup_removes_only_a_strict_probe_directory() {
+        let probe = tempfile::Builder::new()
+            .prefix(PROBE_DIRECTORY_PREFIX)
+            .tempdir();
+        assert!(probe.is_ok());
+        let Some(probe) = probe.ok() else {
+            return;
+        };
+        let probe_path = probe.path().to_path_buf();
+        assert!(fs::create_dir(probe_path.join(PROFILE_DIRECTORY_NAME)).is_ok());
+        assert!(fs::write(probe_path.join(READY_FILE_NAME), b"ready\n").is_ok());
+        assert!(probe_directory_is_strictly_scoped(&probe_path));
+        assert!(remove_probe_directory_bounded(&probe_path).await);
+        assert!(probe_path.try_exists().is_ok_and(|exists| !exists));
+
+        let unrelated = tempfile::Builder::new()
+            .prefix("unrelated-webview-profile-")
+            .tempdir();
+        assert!(unrelated.is_ok());
+        let Some(unrelated) = unrelated.ok() else {
+            return;
+        };
+        assert!(!probe_directory_is_strictly_scoped(unrelated.path()));
+        assert!(!remove_probe_directory_bounded(unrelated.path()).await);
+        assert!(unrelated.path().is_dir());
+    }
 
     #[test]
     fn producer_paths_and_ready_marker_are_strictly_scoped_and_secret_free() {
