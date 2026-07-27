@@ -155,8 +155,13 @@ if (-not (Test-Path -LiteralPath $bundledRscript -PathType Leaf)) {
   throw "The verified runtime did not contain bin\Rscript.exe."
 }
 
-$rscriptCommand = Get-Command "Rscript.exe" -CommandType Application
-$rCommand = Get-Command "R.exe" -CommandType Application
+$rscriptCommand = Get-Command "Rscript.exe" -CommandType Application |
+  Select-Object -First 1
+$rCommand = Get-Command "R.exe" -CommandType Application |
+  Select-Object -First 1
+if ($null -eq $rscriptCommand -or $null -eq $rCommand) {
+  throw "System R was not available after setup-r."
+}
 $env:RPACKIT_GATE_SYSTEM_LIBRARY = $systemLibrary
 $env:R_LIBS_USER = $systemLibrary
 $env:TEMP = $rTemp
