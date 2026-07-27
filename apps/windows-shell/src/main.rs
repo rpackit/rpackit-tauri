@@ -1,3 +1,5 @@
+//! Native Windows shell entry point for one prepared rpackit bundle.
+
 #[cfg(windows)]
 mod windows_app;
 
