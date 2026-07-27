@@ -193,6 +193,7 @@ fn dropping_job_kills_wrapper_and_descendant() -> Result<(), Box<dyn std::error:
     assert_ne!(descendant.identity().creation_time_100ns, 0);
     assert!(wrapper.is_alive()?);
     assert!(descendant.is_alive()?);
+    assert!(process.active_process_count()? >= 2);
     drop(process);
 
     assert!(wrapper.wait(Duration::from_secs(10))?.is_some());
@@ -203,6 +204,26 @@ fn dropping_job_kills_wrapper_and_descendant() -> Result<(), Box<dyn std::error:
             "process {pid} survived Job close"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn terminating_job_reaches_zero_active_members() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempdir()?;
+    let pid_path = temporary.path().join("terminated process ids.txt");
+    let command = LaunchCommand::new(FIXTURE, temporary.path())
+        .args([OsString::from("tree"), pid_path.as_os_str().to_owned()]);
+    let process = launch(&command)?;
+    let pids = wait_for_pids(&pid_path, Duration::from_secs(10))?;
+    let wrapper = process.capture_job_member(pids[0])?;
+    let descendant = process.capture_job_member(pids[1])?;
+
+    assert!(process.active_process_count()? >= 2);
+    process.terminate(0x5250_4B46)?;
+    assert!(process.wait_for_empty(Duration::from_secs(10))?);
+    assert_eq!(process.active_process_count()?, 0);
+    assert!(wrapper.wait(Duration::from_secs(10))?.is_some());
+    assert!(descendant.wait(Duration::from_secs(10))?.is_some());
     Ok(())
 }
 

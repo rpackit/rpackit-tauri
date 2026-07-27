@@ -1,0 +1,32 @@
+[package]
+name = "rpackit-windows-lifecycle"
+description = "Fail-closed lifecycle owner for bundled rpackit R processes on Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rpackit-launcher-protocol = { path = "../launcher-protocol" }
+rpackit-resource-bundle = { path = "../resource-bundle" }
+rpackit-transport = { path = "../transport" }
+rpackit-windows-launcher = { path = "../windows-launcher" }
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

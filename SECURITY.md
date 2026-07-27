@@ -60,15 +60,23 @@ A validated explicit Unicode environment can replace parent inheritance:
 names are unique under Windows' ordinal case-insensitive comparison, entries
 are sorted and exactly double-NUL terminated, malformed fields fail closed,
 Debug output omits names and values, and stored/serialized buffers are
-zeroized. The real-R owner will use it to remove ambient R/rpackit
-configuration without placing any launch secret in the environment.
+zeroized. The lifecycle owner uses it to remove ambient R/rpackit
+configuration without placing any launch secret in the environment; the same
+behavior still needs the released-R acceptance gate.
 A separate native layer atomically creates a protected per-launch directory
 and token/control files whose exact DACL contains only current-account and
 `SYSTEM` full-control allow entries. It reads each DACL back, requires the
 protected bit, uses `CREATE_NEW` for fixed files, and never recursively removes
-an unexpected entry. This evidence does not yet cover connecting those layers
-to a real R launch, authenticated readiness, launcher consumption/deletion of
-the token, or graceful close.
+an unexpected entry. This evidence does not yet cover the released portable R
+and `hello-shiny`.
+
+The Windows lifecycle owner now connects the same layers to an executable
+synthetic runtime: it verifies actual token deletion, strict events, exact
+runtime/listener ownership, authenticated direct readiness, both process
+handles, graceful control signaling, forced Job fallback, zero active members,
+and retryable non-recursive cleanup. Stderr text and non-protocol stdout are
+never retained. This fixture is deliberately not evidence about real R,
+generated launcher behavior, Shiny, or the proxy/WebView shutdown sequence.
 
 The private descriptor is supplied in `SECURITY_ATTRIBUTES` at object
 creation, matching the documented

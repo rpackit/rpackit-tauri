@@ -247,12 +247,39 @@ positive runtime PID, selected port, and exact graceful-stop policy; `error`
 is terminal. Error display text is length-bounded and control characters are
 collapsed.
 
+`crates/windows-lifecycle` now composes those foundations into one Windows
+runtime owner. It validates the bundle before creating a session, removes
+ambient R/rpackit variables, pins `R_HOME`, every R library variable, protocol
+2, and the bundled `R/bin` path, writes `S` only to the protected token file,
+and launches exactly:
+
+```text
+Rscript.exe --vanilla launcher.R --app <path> --port <port>
+  --token-file <private-path> --control <private-path>
+```
+
+The owner drains stderr without retaining text and feeds stdout only to the
+bounded protocol decoder. It returns from startup only after token deletion,
+the matching post-bind `listening` event, create-time-aware Job-member capture,
+exact owner-PID listener verification, and a direct HTTP 2xx/3xx response
+authenticated with `S`. `poll_health()` checks both exact process handles.
+`shutdown()` creates the protected control file, waits a bounded graceful
+period, terminates the whole Job as fallback, requires zero active Job
+members, joins both pipe monitors, and removes only the known session files
+and now-empty directory. An unexpected entry is preserved and
+`retry_private_cleanup()` keeps cleanup explicit and retryable.
+
+A synthetic `Rscript.exe` acceptance fixture passes authenticated startup,
+graceful close, forced fallback when control is ignored, owner-drop
+termination, malformed protocol, readiness timeout, occupied-port rejection,
+post-readiness process exit detection, and non-recursive cleanup retry. The
+fixture also verifies the actual isolated child environment. It contains no
+portable R and is not a substitute for the released-runtime gate.
+
 This is deliberately not a full Phase 2 claim. Generating the complete native
-launch state, proving real-launcher consumption and deletion of its protected
-token file, wiring the decoder and reported PID capture to the real R
-lifecycle pipes, listener ownership verification to the real R process,
-authenticated readiness, graceful control-file shutdown, and integration with
-`hello-shiny` remain required before Phase 2 can be marked complete.
+Tauri launch state around the proxy/WebView and running this same owner against
+the released portable R, generated launcher, and `hello-shiny` remain required
+before Phase 2 can be marked complete.
 
 ## Development
 
@@ -474,8 +501,9 @@ Release. The fixed reports have `development_gates_passed: true`,
 
 Phase 2 now has strict schema-1 resource validation, verified Windows
 Job/process creation, exact runtime PID/listener capture, strict protocol-2
-decoding, and atomically restricted token/control-file foundations. Real R
-readiness and the complete shutdown lifecycle remain in progress; resource
-generation and installers are later milestones. See
+decoding, atomically restricted token/control files, and one integrated
+synthetic lifecycle owner with authenticated readiness and deterministic
+shutdown. The released portable-R/`hello-shiny` matrix remains in progress;
+resource generation and installers are later milestones. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries and evidence
 interpretation.

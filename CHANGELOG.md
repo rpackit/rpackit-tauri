@@ -47,10 +47,19 @@ All notable changes to this pre-release repository are documented here.
   tracker. It rejects duplicate/unknown fields, wrong versions, weakened
   loopback or token claims, line overflow/truncation, PID/port changes,
   impossible transitions, and events after a terminal state.
+- Added a Windows runtime owner that composes validated resources, sanitized
+  bundled-R environment, protected token/control handoff, suspended Job
+  launch, bounded pipe monitoring, exact runtime/listener ownership,
+  authenticated readiness, graceful control-file shutdown, forced Job
+  fallback, zero-active-process accounting, and retryable non-recursive
+  cleanup.
+- Added an executable synthetic-R lifecycle matrix covering graceful and
+  forced close, owner drop, malformed protocol, readiness timeout, occupied
+  port, post-readiness exit, environment isolation, and preserved audit-entry
+  cleanup retry without downloading a runtime locally.
 - Kept the Phase 2 boundary explicit: generated native-metadata validation,
-  secret generation, real-launcher token consumption, real-pipe orchestration
-  and authenticated readiness, graceful close, and `hello-shiny` integration
-  remain in progress.
+  proxy/WebView orchestration and the released portable-R/`hello-shiny`
+  lifecycle matrix remain in progress.
 
 ### Transport contract version 2
 

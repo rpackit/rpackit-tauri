@@ -5,6 +5,7 @@ members = [
   "crates/resource-bundle",
   "crates/transport",
   "crates/transport-testkit",
+  "crates/windows-lifecycle",
   "crates/windows-launcher",
 ]
 default-members = [

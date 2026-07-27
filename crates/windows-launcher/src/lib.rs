@@ -23,7 +23,8 @@ use std::net::Ipv4Addr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
@@ -42,7 +43,8 @@ use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Pipes::CreatePipe;
@@ -537,6 +539,52 @@ impl JobProcess {
         // SAFETY: The Job handle is owned and valid.
         unsafe { TerminateJobObject(raw_handle(&self.job), exit_code) }
             .map_err(|error| api_error("TerminateJobObject", &error))
+    }
+
+    /// Returns the number of processes Windows currently reports in the Job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Windows cannot query Job accounting information.
+    pub fn active_process_count(&self) -> Result<u32, LaunchError> {
+        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: The Job handle is owned and valid. `accounting` points to
+        // writable storage of the exact information-class size.
+        unsafe {
+            QueryInformationJobObject(
+                Some(raw_handle(&self.job)),
+                JobObjectBasicAccountingInformation,
+                (&raw mut accounting).cast::<std::ffi::c_void>(),
+                native_structure_size::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>()?,
+                None,
+            )
+        }
+        .map_err(|error| api_error("QueryInformationJobObject", &error))?;
+        Ok(accounting.ActiveProcesses)
+    }
+
+    /// Waits until Windows reports that the owned Job has no active processes.
+    ///
+    /// Returns `false` when `timeout` elapses first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Job accounting cannot be queried.
+    pub fn wait_for_empty(&self, timeout: Duration) -> Result<bool, LaunchError> {
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            if self.active_process_count()? == 0 {
+                return Ok(true);
+            }
+            let Some(deadline) = deadline else {
+                return Ok(false);
+            };
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        }
     }
 }
 

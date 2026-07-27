@@ -2612,6 +2612,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpackit-windows-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "rpackit-launcher-protocol",
+ "rpackit-resource-bundle",
+ "rpackit-transport",
+ "rpackit-windows-launcher",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
 name = "rpackit-windows-spike"
 version = "0.1.0"
 dependencies = [

@@ -22,6 +22,7 @@ ownership and readiness.
 | `crates/launcher-protocol` | Bounded protocol-2 NDJSON decoding, exact event validation, noise accounting and lifecycle sequence tracking | Process creation, secret handling, readiness network requests, untrusted output retention |
 | `crates/resource-bundle` | Bounded strict schema-1 manifest loading, authenticated protocol-2 contract checks, critical-path containment, app/runtime/package topology and launcher-marker validation | Executing R or app code, downloading runtimes, package installation, process creation |
 | `crates/windows-launcher` | Explicit Windows process creation, standard-I/O handle allowlisting, suspended Job assignment, process/listener identity, private DACL token/control files, Job policy readback and process-tree termination | Bundle validation, secret generation, protocol-pipe orchestration, readiness requests, browser lifecycle |
+| `crates/windows-lifecycle` | Validated-resource composition, sanitized bundled-R environment, private secret handoff, protocol pipes, exact runtime/listener ownership, authenticated readiness, health polling, graceful/forced stop, Job accounting and retryable cleanup | Proxy/WebView ownership, portable-runtime acquisition, generated application UI |
 | `apps/windows-spike` | Hidden hardened Tauri/WebView2 shell, one native bootstrap navigation, cookie readback, browser exercise, cleanup and acceptance report | JavaScript bridge for credentials, general request injection, R launcher lifecycle |
 | `tests/run-webview2.ps1` | Starts one development- or reviewed-fixed-runtime harness profile, reusing the selected Cargo target | Runtime download, package trust decisions, installer validation |
 | `tests/run-webview2-fixed.ps1` and `tests/webview2-fixed-runtime.json` | Verify the pinned Microsoft package, run Debug and Release fixed-minimum matrices, validate reports, and remove temporary runtime files | Committing runtime binaries, silently selecting another version, installer validation |
@@ -134,18 +135,30 @@ callers may retain the default inherited environment, while the real-R owner
 must supply the sanitized explicit environment described above. Neither form
 may place `S`, `P`, or `B` there. The separate private-files API accepts `S`
 only to write the protected token file and does not retain it in the session
-value. The later lifecycle owner will pass only that file's path—not `S`
-itself—in the R launcher arguments.
+value. The lifecycle owner passes only that file's path—not `S` itself—in the
+R launcher arguments.
 
-The separate safe protocol crate already bounds and parses the prefixed NDJSON
-stream and validates event ordering, fixed loopback/token claims, the selected
-port, and stable runtime PID. The remaining Phase 2 layers validate
-the generated native metadata, generate `S`, drive that decoder from the real
-pipe, prove the R launcher consumed and deleted the protected token file, open
-and retain the reported runtime identity through the existing capture API,
-apply the existing listener-owner verifier to the real R socket, authenticate
-readiness, and perform bounded graceful shutdown before forced Job
-termination.
+The separate safe protocol crate bounds and parses the prefixed NDJSON stream
+and validates event ordering, fixed loopback/token claims, the selected port,
+and stable runtime PID.
+
+`crates/windows-lifecycle` now composes these boundaries for an executable
+synthetic runtime. Its startup order is bundle validation, private session,
+`S` token write, explicit sanitized environment construction, suspended Job
+launch, token-consumption proof, protocol `listening`, exact runtime/listener
+capture, and direct authenticated HTTP readiness. Stderr is counted and
+discarded without retaining text. The ready owner polls both exact process
+handles. Shutdown creates the protected control file, accepts only the
+validated stopping/stopped sequence during the grace bound, and otherwise
+terminates the Job. It requires zero active Job members before cleaning the
+known files, preserves unexpected entries, and retains the exact session for
+an explicit cleanup retry. Dropping an unclean owner invokes the same forced
+Job path best-effort.
+
+The synthetic fixture exercises these native boundaries without bundling R.
+It therefore proves orchestration behavior but does not yet prove
+compatibility with the released portable runtime, generated `launcher.R`,
+Shiny, or the proxy/WebView window-close sequence.
 
 ## Secret and origin model
 
