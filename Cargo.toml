@@ -59,7 +59,7 @@ url = "=2.5.8"
 # series moves to Windows 0.62 and cannot be upgraded independently.
 webview2-com = "=0.38.2"
 windows = { version = "=0.61.3", features = ["Win32_System_Com"] }
-winreg = "=0.55.0"
+winreg = "=0.56.0"
 zeroize = { version = "=1.9.0", features = ["derive"] }
 
 [workspace.lints.rust]
