@@ -27,7 +27,7 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
       - name: Format
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
@@ -45,7 +45,7 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
       - name: Compile full workspace
         run: cargo check --workspace --all-targets --locked
       - name: Clippy full workspace
